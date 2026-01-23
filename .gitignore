@@ -1,0 +1,17 @@
+# Create .gitignore in your project root
+```
+
+Add this content to `.gitignore`:
+```
+node_modules/
+.env
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+.DS_Store
+dist/
+build/
+coverage/
+.vscode/
+.idea/
