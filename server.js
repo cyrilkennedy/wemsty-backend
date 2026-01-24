@@ -22,6 +22,11 @@ const socialRoutes = require('./routes/social.routes');
 const app = express();
 
 // ────────────────────────────────────────────────
+// TRUST PROXY - Required for rate limiting behind proxies (Render, Heroku, etc.)
+// ────────────────────────────────────────────────
+app.set('trust proxy', 1); // Trust first proxy
+
+// ────────────────────────────────────────────────
 // SECURITY & MIDDLEWARE
 // ────────────────────────────────────────────────
 
@@ -63,6 +68,7 @@ const limiter = rateLimit({
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { trustProxy: false }, // Disable validation warnings
 });
 app.use(limiter);
 
