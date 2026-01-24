@@ -128,8 +128,20 @@ app.use((req, res, next) => {
   });
 });
 
-// Global error handler (must be last)
-app.use(errorMiddleware);
+// TEMPORARY - Simple error handler to test
+app.use((err, req, res, next) => {
+  console.error('❌ Error caught:', err);
+  console.error('Error stack:', err.stack);
+  
+  res.status(err.statusCode || 500).json({
+    status: 'error',
+    message: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
+});
+
+// Global error handler (must be last) - COMMENTED OUT FOR TESTING
+// app.use(errorMiddleware);
 
 // ────────────────────────────────────────────────
 // START SERVER
