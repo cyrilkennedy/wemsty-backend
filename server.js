@@ -27,7 +27,7 @@ const app = express();
 
 // Security headers
 app.use(helmet({
-  contentSecurityPolicy: false, // Configure based on your needs
+  contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false
 }));
 
@@ -38,25 +38,15 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('combined'));
 }
 
-// CORS - Allow multiple origins
-const allowedOrigins = process.env.ALLOWED_ORIGINS 
-  ? process.env.ALLOWED_ORIGINS.split(',') 
-  : ['http://localhost:3000', 'http://localhost:3001'];
-
+// CORS - Allow all origins (for development/testing)
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, Postman, etc.)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: true, // Allow all origins
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Set-Cookie'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
 
 // Body parser
@@ -114,7 +104,7 @@ app.get('/', (req, res) => {
 // ────────────────────────────────────────────────
 
 // 404 handler - must be before error middleware
-app.use((req, res) => {
+app.use((req, res, next) => {
   res.status(404).json({ 
     success: false,
     error: 'Route not found',
@@ -134,7 +124,7 @@ const server = app.listen(PORT, () => {
   console.log(`═══════════════════════════════════════════════`);
   console.log(`🚀 Wemsty Backend running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`CORS: ${allowedOrigins.join(', ')}`);
+  console.log(`CORS: Enabled for all origins`);
   console.log(`MongoDB: Connected`);
   console.log(`═══════════════════════════════════════════════`);
 });
