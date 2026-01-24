@@ -72,6 +72,16 @@ app.use(limiter);
 connectDB();
 
 // ────────────────────────────────────────────────
+// DEBUG MIDDLEWARE - Find where "next is not a function" happens
+// ────────────────────────────────────────────────
+app.use((req, res, next) => {
+  console.log(`
+🔍 Request received: ${req.method} ${req.path}`);
+  console.log('Headers:', req.headers);
+  next();
+});
+
+// ────────────────────────────────────────────────
 // ROUTES
 // ────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
