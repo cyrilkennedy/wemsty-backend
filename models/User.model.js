@@ -190,22 +190,16 @@ UserSchema.virtual('fullName').get(function() {
 // ════════════════════════════════════════════════
 
 // Hash password before saving
-UserSchema.pre('save', async function(next) {
+UserSchema.pre('save', async function() {
   // Only hash if password is modified
-  if (!this.isModified('password')) return next();
+  if (!this.isModified('password')) return;
 
-  try {
-    const salt = await bcrypt.genSalt(12);
-    this.password = await bcrypt.hash(this.password, salt);
-    
-    // Update passwordChangedAt if this is a password change (not initial creation)
-    if (!this.isNew) {
-      this.passwordChangedAt = Date.now() - 1000; // 1 second ago to ensure tokens are valid
-    }
-    
-    next();
-  } catch (error) {
-    next(error);
+  const salt = await bcrypt.genSalt(12);
+  this.password = await bcrypt.hash(this.password, salt);
+  
+  // Update passwordChangedAt if this is a password change (not initial creation)
+  if (!this.isNew) {
+    this.passwordChangedAt = Date.now() - 1000; // 1 second ago to ensure tokens are valid
   }
 });
 
