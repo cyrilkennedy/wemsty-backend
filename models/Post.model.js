@@ -1,6 +1,11 @@
 // models/Post.model.js
 
 const mongoose = require('mongoose');
+const {
+  POST_CATEGORY_SLUGS,
+  DEFAULT_POST_CATEGORY,
+  normalizeCategorySlug
+} = require('../config/post-categories');
 
 const PostSchema = new mongoose.Schema({
   // ════════════════════════════════════════════════
@@ -46,10 +51,17 @@ const PostSchema = new mongoose.Schema({
   // ════════════════════════════════════════════════
   // CONTENT
   // ════════════════════════════════════════════════
+  category: {
+    type: String,
+    enum: POST_CATEGORY_SLUGS,
+    default: DEFAULT_POST_CATEGORY,
+    index: true
+  },
+
   content: {
     text: {
       type: String,
-      maxlength: 280, // Twitter-style limit (adjustable)
+      maxlength: 500,
       trim: true
     },
     
@@ -220,6 +232,7 @@ const PostSchema = new mongoose.Schema({
 PostSchema.index({ author: 1, createdAt: -1 });
 PostSchema.index({ originalPost: 1, createdAt: -1 });
 PostSchema.index({ parentPost: 1, createdAt: -1 });
+PostSchema.index({ category: 1, visibility: 1, status: 1, createdAt: -1 });
 PostSchema.index({ 'content.hashtags': 1, createdAt: -1 });
 PostSchema.index({ visibility: 1, status: 1, sphereEligible: 1 });
 PostSchema.index({ sphereScore: -1, createdAt: -1 }); // For You feed
@@ -258,6 +271,10 @@ PostSchema.virtual('engagementRate').get(function() {
 
 // Extract hashtags from text
 PostSchema.pre('save', function(next) {
+  if (this.isModified('category') || !this.category) {
+    this.category = normalizeCategorySlug(this.category || DEFAULT_POST_CATEGORY);
+  }
+
   if (this.isModified('content.text') && this.content.text) {
     const hashtagRegex = /#(\w+)/g;
     const hashtags = [];
@@ -355,47 +372,90 @@ PostSchema.statics.getHomeFeed = async function(userId, options = {}) {
 
 // Get posts for Sphere/For You feed
 PostSchema.statics.getSphereFeed = async function(userId, options = {}) {
-  const { page = 1, limit = 20 } = options;
-  const Follow = mongoose.model('Follow');
+  const { page = 1, limit = 20, mode = 'top' } = options;
   const Block = mongoose.model('Block');
-  
-  // Get users already following
-  const following = await Follow.find({ 
-    follower: userId, 
-    status: 'ACCEPTED' 
-  }).select('following');
-  const followingIds = following.map(f => f.following);
-  
-  // Get blocked users
-  const blocked = await Block.find({
-    $or: [{ blocker: userId }, { blocked: userId }]
-  });
-  const blockedIds = blocked.map(b => 
-    b.blocker.equals(userId) ? b.blocked : b.blocker
-  );
-  
-  // Sphere query: public, high quality, not from following, not blocked
+
+  let blockedIds = [];
+  if (userId) {
+    const blocked = await Block.find({
+      $or: [{ blocker: userId }, { blocked: userId }]
+    });
+    blockedIds = blocked.map(b =>
+      b.blocker.equals(userId) ? b.blocked : b.blocker
+    );
+  }
+
   const query = {
-    author: { $nin: [...followingIds, ...blockedIds, userId] },
+    author: { $nin: blockedIds },
     visibility: 'public',
     sphereEligible: true,
-    status: 'active',
-    qualityScore: { $gte: 0.5 } // Minimum quality threshold
+    status: 'active'
   };
-  
+
+  const sort = mode === 'latest'
+    ? { createdAt: -1 }
+    : { sphereScore: -1, 'engagement.score': -1, createdAt: -1 };
+
   const posts = await this.find(query)
     .populate('author', 'username profile.displayName profile.avatar isEmailVerified')
-    .sort({ sphereScore: -1, createdAt: -1 }) // Sort by relevance
+    .sort(sort)
     .limit(limit)
     .skip((page - 1) * limit);
-  
+
+  const total = await this.countDocuments(query);
+
   return {
     posts,
     pagination: {
       page,
       limit,
-      total: await this.countDocuments(query),
-      pages: Math.ceil(await this.countDocuments(query) / limit)
+      total,
+      pages: Math.ceil(total / limit)
+    }
+  };
+};
+
+PostSchema.statics.getCategoryFeed = async function(category, userId, options = {}) {
+  const { page = 1, limit = 20, mode = 'latest' } = options;
+  const Block = mongoose.model('Block');
+
+  let blockedIds = [];
+  if (userId) {
+    const blocked = await Block.find({
+      $or: [{ blocker: userId }, { blocked: userId }]
+    });
+    blockedIds = blocked.map(b =>
+      b.blocker.equals(userId) ? b.blocked : b.blocker
+    );
+  }
+
+  const query = {
+    category: normalizeCategorySlug(category),
+    author: { $nin: blockedIds },
+    visibility: 'public',
+    status: 'active'
+  };
+
+  const sort = mode === 'top'
+    ? { sphereScore: -1, 'engagement.score': -1, createdAt: -1 }
+    : { createdAt: -1 };
+
+  const posts = await this.find(query)
+    .populate('author', 'username profile.displayName profile.avatar isEmailVerified')
+    .populate('originalPost')
+    .sort(sort)
+    .limit(limit)
+    .skip((page - 1) * limit);
+
+  const total = await this.countDocuments(query);
+
+  return {
+    posts,
+    pagination: {
+      page,
+      limit,
+      total,
+      pages: Math.ceil(total / limit)
     }
   };
 };

@@ -6,7 +6,22 @@ const userController = require('../controllers/user.controller');
 const authMiddleware = require('../middlewares/auth.middleware');
 
 // ════════════════════════════════════════════════
-// ALL ROUTES REQUIRE AUTHENTICATION
+// PUBLIC USER INFO (OPTIONAL AUTH)
+// ════════════════════════════════════════════════
+
+/**
+ * @route   GET /api/users/:username
+ * @desc    Get public user profile by username
+ * @access  Public
+ */
+router.get(
+  '/handle/:username',
+  authMiddleware.optionalAuth,
+  userController.getUserByUsername
+);
+
+// ════════════════════════════════════════════════
+// ALL ROUTES BELOW REQUIRE AUTHENTICATION
 // ════════════════════════════════════════════════
 router.use(authMiddleware.protect);
 
@@ -34,21 +49,6 @@ router.patch('/profile', userController.updateProfile);
  * @access  Private
  */
 router.delete('/account', userController.deleteAccount);
-
-// ════════════════════════════════════════════════
-// PUBLIC USER INFO (OPTIONAL AUTH)
-// ════════════════════════════════════════════════
-
-/**
- * @route   GET /api/users/:username
- * @desc    Get public user profile by username
- * @access  Public
- */
-router.get(
-  '/:username',
-  authMiddleware.optionalAuth,
-  userController.getUserByUsername
-);
 
 // ════════════════════════════════════════════════
 // ADMIN ROUTES

@@ -166,8 +166,6 @@ const UserSchema = new mongoose.Schema({
 // ════════════════════════════════════════════════
 // INDEXES
 // ════════════════════════════════════════════════
-UserSchema.index({ email: 1 });
-UserSchema.index({ username: 1 });
 UserSchema.index({ 'authProviders.providerId': 1 });
 UserSchema.index({ accountStatus: 1 });
 

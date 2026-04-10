@@ -7,6 +7,39 @@ const User = require('../models/User.model');
 const Block = require('../models/Block.model');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
+const {
+  POST_CATEGORIES,
+  DEFAULT_POST_CATEGORY,
+  normalizeCategorySlug,
+  isValidPostCategory,
+  getPostCategory
+} = require('../config/post-categories');
+const {
+  createNotification,
+  createMentionNotifications
+} = require('../services/notification.service');
+const { kafkaManager } = require('../config/kafka');
+const realtimeEvents = require('../services/realtime-events.service');
+const algoliaService = require('../services/algolia.service');
+
+async function attachViewerStateToPosts(posts, userId) {
+  if (!userId || posts.length === 0) {
+    return posts.map((post) => post.toObject());
+  }
+
+  const postIds = posts.map((post) => post._id);
+  const userLikes = await Like.find({
+    user: userId,
+    post: { $in: postIds }
+  }).select('post');
+
+  const likedPostIds = new Set(userLikes.map((like) => like.post.toString()));
+
+  return posts.map((post) => ({
+    ...post.toObject(),
+    isLiked: likedPostIds.has(post._id.toString())
+  }));
+}
 
 // ════════════════════════════════════════════════
 // POST CREATION
@@ -14,28 +47,35 @@ const { catchAsync } = require('../utils/catchAsync');
 
 // Create a post
 exports.createPost = catchAsync(async (req, res, next) => {
-  const { text, media, visibility, sphereEligible } = req.body;
+  const { text, media, visibility, sphereEligible, category } = req.body;
   const userId = req.user._id;
+  const normalizedCategory = normalizeCategorySlug(category || DEFAULT_POST_CATEGORY);
+  const resolvedVisibility = visibility || 'public';
 
   // Validate content
   if (!text && (!media || media.length === 0)) {
     return next(new AppError('Post must have text or media', 400));
   }
 
-  if (text && text.length > 280) {
-    return next(new AppError('Post text cannot exceed 280 characters', 400));
+  if (text && text.length > 500) {
+    return next(new AppError('Post text cannot exceed 500 characters', 400));
+  }
+
+  if (!isValidPostCategory(normalizedCategory)) {
+    return next(new AppError('A valid post category is required', 400));
   }
 
   // Create post
   const post = await Post.create({
     author: userId,
     postType: 'original',
+    category: normalizedCategory,
     content: {
       text,
       media: media || []
     },
-    visibility: visibility || 'public',
-    sphereEligible: sphereEligible !== false
+    visibility: resolvedVisibility,
+    sphereEligible: resolvedVisibility === 'public' ? sphereEligible !== false : false
   });
 
   // Increment user's post count
@@ -46,13 +86,44 @@ exports.createPost = catchAsync(async (req, res, next) => {
   // Populate author details
   await post.populate('author', 'username profile.displayName profile.avatar');
 
-  // TODO: Emit event for feed distribution
-  // eventEmitter.emit('post.created', { postId: post._id, authorId: userId });
+  if (text) {
+    await createMentionNotifications({
+      text,
+      actor: userId,
+      type: 'mention',
+      objectType: 'post',
+      objectId: post._id
+    });
+  }
+
+  // Emit event for search indexing (Kafka)
+  await kafkaManager.emitSearchIndexEvent('index', 'post', post._id.toString(), {
+    action: 'create',
+    visibility: post.visibility
+  });
+
+  // Emit event for search indexing (Algolia direct fallback)
+  if (algoliaService.client && post.visibility === 'public') {
+    await algoliaService.savePost(post);
+  }
+
+  // Emit event for real-time updates
+  realtimeEvents.emit('post.created', { post });
+
+  // Emit event for feed distribution (Kafka)
+  await kafkaManager.emitPostEvent('created', post._id, userId, {
+    category: post.category,
+    visibility: post.visibility
+  });
+
 
   res.status(201).json({
     success: true,
     message: 'Post created successfully',
-    data: { post }
+    data: {
+      post,
+      category: getPostCategory(post.category)
+    }
   });
 });
 
@@ -90,10 +161,12 @@ exports.createRepost = catchAsync(async (req, res, next) => {
     author: userId,
     postType: text ? 'quote' : 'repost',
     originalPost: postId,
+    category: originalPost.category,
     content: {
       text: text || ''
     },
-    visibility: originalPost.visibility
+    visibility: originalPost.visibility,
+    sphereEligible: originalPost.visibility === 'public'
   });
 
   // Update original post repost counter
@@ -110,6 +183,25 @@ exports.createRepost = catchAsync(async (req, res, next) => {
     }
   ]);
 
+  await createNotification({
+    recipient: originalPost.author,
+    actor: userId,
+    type: 'repost',
+    objectType: 'post',
+    objectId: originalPost._id,
+    previewText: text || originalPost.content?.text || ''
+  });
+
+  if (text) {
+    await createMentionNotifications({
+      text,
+      actor: userId,
+      type: 'mention',
+      objectType: 'post',
+      objectId: repost._id
+    });
+  }
+
   res.status(201).json({
     success: true,
     message: 'Reposted successfully',
@@ -124,6 +216,10 @@ exports.createReply = catchAsync(async (req, res, next) => {
 
   if (!text || text.trim() === '') {
     return next(new AppError('Reply text is required', 400));
+  }
+
+  if (text.length > 500) {
+    return next(new AppError('Reply text cannot exceed 500 characters', 400));
   }
 
   // Find parent post
@@ -145,10 +241,12 @@ exports.createReply = catchAsync(async (req, res, next) => {
     postType: 'reply',
     parentPost: postId,
     replyTo: parentPost.author,
+    category: parentPost.category,
     content: {
       text
     },
-    visibility: parentPost.visibility
+    visibility: parentPost.visibility,
+    sphereEligible: false
   });
 
   // Update parent post comment counter
@@ -162,8 +260,22 @@ exports.createReply = catchAsync(async (req, res, next) => {
     { path: 'replyTo', select: 'username profile.displayName' }
   ]);
 
-  // TODO: Emit event for notifications
-  // eventEmitter.emit('reply.created', { replyId: reply._id, parentId: postId });
+  await createNotification({
+    recipient: parentPost.author,
+    actor: userId,
+    type: 'reply',
+    objectType: 'post',
+    objectId: parentPost._id,
+    previewText: text
+  });
+
+  await createMentionNotifications({
+    text,
+    actor: userId,
+    type: 'mention',
+    objectType: 'post',
+    objectId: reply._id
+  });
 
   res.status(201).json({
     success: true,
@@ -182,21 +294,7 @@ exports.getHomeFeed = catchAsync(async (req, res, next) => {
   const { page = 1, limit = 20 } = req.query;
 
   const result = await Post.getHomeFeed(userId, { page, limit });
-
-  // Check which posts are liked by current user
-  const postIds = result.posts.map(p => p._id);
-  const userLikes = await Like.find({ 
-    user: userId, 
-    post: { $in: postIds } 
-  }).select('post');
-  
-  const likedPostIds = new Set(userLikes.map(l => l.post.toString()));
-
-  // Add liked status to posts
-  const postsWithLikeStatus = result.posts.map(post => ({
-    ...post.toObject(),
-    isLiked: likedPostIds.has(post._id.toString())
-  }));
+  const postsWithLikeStatus = await attachViewerStateToPosts(result.posts, userId);
 
   res.status(200).json({
     success: true,
@@ -209,15 +307,48 @@ exports.getHomeFeed = catchAsync(async (req, res, next) => {
 
 // Get Sphere/For You feed
 exports.getSphereFeed = catchAsync(async (req, res, next) => {
-  const userId = req.user._id;
-  const { page = 1, limit = 20 } = req.query;
+  const userId = req.user?._id;
+  const { page = 1, limit = 20, mode = 'top' } = req.query;
 
-  const result = await Post.getSphereFeed(userId, { page, limit });
+  const result = await Post.getSphereFeed(userId, { page, limit, mode });
+  const feed = await attachViewerStateToPosts(result.posts, userId);
 
   res.status(200).json({
     success: true,
     data: {
-      feed: result.posts,
+      feed,
+      pagination: result.pagination
+    }
+  });
+});
+
+exports.listCategories = catchAsync(async (req, res) => {
+  res.status(200).json({
+    success: true,
+    data: {
+      categories: POST_CATEGORIES
+    }
+  });
+});
+
+exports.getCategoryFeed = catchAsync(async (req, res, next) => {
+  const userId = req.user?._id;
+  const { categorySlug } = req.params;
+  const { page = 1, limit = 20, mode = 'latest' } = req.query;
+  const category = getPostCategory(categorySlug);
+
+  if (!category) {
+    return next(new AppError('Category not found', 404));
+  }
+
+  const result = await Post.getCategoryFeed(category.slug, userId, { page, limit, mode });
+  const feed = await attachViewerStateToPosts(result.posts, userId);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      category,
+      feed,
       pagination: result.pagination
     }
   });
@@ -384,6 +515,37 @@ exports.toggleLike = catchAsync(async (req, res, next) => {
   updatedPost.calculateSphereScore();
   await updatedPost.save({ validateBeforeSave: false });
 
+  if (result.liked) {
+    await createNotification({
+      recipient: post.author,
+      actor: userId,
+      type: 'like',
+      objectType: 'post',
+      objectId: post._id,
+      previewText: post.content?.text || ''
+    });
+  }
+
+  // Emit real-time update
+  realtimeEvents.emit('post.liked', { 
+    postId: post._id, 
+    likesCount: updatedPost.engagement.likes,
+    userId: userId 
+  });
+
+  // Emit Kafka event for engagement tracking
+  await kafkaManager.emitPostEvent('liked', post._id, userId, {
+    likesCount: updatedPost.engagement.likes,
+    isLiked: result.liked
+  });
+
+  // Update Algolia if public
+  if (algoliaService.client && post.visibility === 'public') {
+    await algoliaService.updatePost(post._id, {
+      'engagement.likes': updatedPost.engagement.likes
+    });
+  }
+
   res.status(200).json({
     success: true,
     message: result.message,
@@ -492,7 +654,7 @@ exports.deletePost = catchAsync(async (req, res, next) => {
 
 // Search posts
 exports.searchPosts = catchAsync(async (req, res, next) => {
-  const { q, page = 1, limit = 20 } = req.query;
+  const { q, page = 1, limit = 20, category } = req.query;
   const userId = req.user?._id;
 
   if (!q) {
@@ -510,13 +672,24 @@ exports.searchPosts = catchAsync(async (req, res, next) => {
     );
   }
 
+  const normalizedCategory = category ? normalizeCategorySlug(category) : null;
+  if (normalizedCategory && !isValidPostCategory(normalizedCategory)) {
+    return next(new AppError('Invalid category filter', 400));
+  }
+
   // Text search
-  const posts = await Post.find({
+  const searchQuery = {
     $text: { $search: q },
     author: { $nin: blockedIds },
     visibility: 'public',
     status: 'active'
-  })
+  };
+
+  if (normalizedCategory) {
+    searchQuery.category = normalizedCategory;
+  }
+
+  const posts = await Post.find(searchQuery)
     .populate('author', 'username profile.displayName profile.avatar')
     .sort({ score: { $meta: 'textScore' } })
     .limit(limit)
@@ -524,14 +697,21 @@ exports.searchPosts = catchAsync(async (req, res, next) => {
 
   const total = await Post.countDocuments({
     $text: { $search: q },
+    ...(normalizedCategory ? { category: normalizedCategory } : {}),
     visibility: 'public',
     status: 'active'
+  });
+
+  const matchedCategories = POST_CATEGORIES.filter((item) => {
+    const term = q.trim().toLowerCase();
+    return item.slug.includes(term) || item.name.toLowerCase().includes(term);
   });
 
   res.status(200).json({
     success: true,
     data: {
       posts,
+      categories: matchedCategories,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -544,7 +724,7 @@ exports.searchPosts = catchAsync(async (req, res, next) => {
 
 // Get trending posts
 exports.getTrending = catchAsync(async (req, res, next) => {
-  const { page = 1, limit = 20, timeframe = '24h' } = req.query;
+  const { page = 1, limit = 20, timeframe = '24h', category } = req.query;
   const userId = req.user?._id;
 
   // Calculate time threshold
@@ -562,12 +742,23 @@ exports.getTrending = catchAsync(async (req, res, next) => {
     );
   }
 
-  const posts = await Post.find({
+  const normalizedCategory = category ? normalizeCategorySlug(category) : null;
+  if (normalizedCategory && !isValidPostCategory(normalizedCategory)) {
+    return next(new AppError('Invalid category filter', 400));
+  }
+
+  const trendingQuery = {
     createdAt: { $gte: timeThreshold },
     author: { $nin: blockedIds },
     visibility: 'public',
     status: 'active'
-  })
+  };
+
+  if (normalizedCategory) {
+    trendingQuery.category = normalizedCategory;
+  }
+
+  const posts = await Post.find(trendingQuery)
     .populate('author', 'username profile.displayName profile.avatar')
     .sort({ 'engagement.score': -1, 'engagement.velocity': -1 })
     .limit(limit)

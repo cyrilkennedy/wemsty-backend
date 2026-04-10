@@ -34,6 +34,27 @@ const interactionLimiter = rateLimit({
 router.get('/trending', authMiddleware.optionalAuth, postController.getTrending);
 
 /**
+ * @route   GET /api/posts/categories
+ * @desc    List supported Wemsty categories
+ * @access  Public
+ */
+router.get('/categories', postController.listCategories);
+
+/**
+ * @route   GET /api/posts/sphere
+ * @desc    Get public Sphere feed
+ * @access  Public
+ */
+router.get('/sphere', authMiddleware.optionalAuth, postController.getSphereFeed);
+
+/**
+ * @route   GET /api/posts/category/:categorySlug
+ * @desc    Get posts for a category feed
+ * @access  Public
+ */
+router.get('/category/:categorySlug', authMiddleware.optionalAuth, postController.getCategoryFeed);
+
+/**
  * @route   GET /api/posts/search
  * @desc    Search posts
  * @access  Public

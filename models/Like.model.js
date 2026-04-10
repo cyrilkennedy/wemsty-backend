@@ -21,7 +21,7 @@ const LikeSchema = new mongoose.Schema({
   metadata: {
     source: {
       type: String,
-      enum: ['home_feed', 'sphere_feed', 'profile', 'thread', 'search'],
+      enum: ['home_feed', 'sphere_feed', 'category_feed', 'profile', 'thread', 'search'],
       default: 'home_feed'
     }
   }

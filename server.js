@@ -2,6 +2,7 @@
 
 require('dotenv').config();
 
+const http = require('http');
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -12,12 +13,22 @@ const rateLimit = require('express-rate-limit');
 // Import configs & middlewares
 const connectDB = require('./config/mongodb');
 const errorMiddleware = require('./middlewares/error.middleware');
+const { initializeRealtime } = require('./services/realtime.service');
 
 // Import routes
 const authRoutes = require('./routes/auth.routes');
 const postRoutes = require('./routes/post.routes');
 const socialRoutes = require('./routes/social.routes');
-// const userRoutes = require('./routes/user.routes'); // Create this file
+const userRoutes = require('./routes/user.routes');
+const circlesRoutes = require('./routes/circles.routes');
+const messagesRoutes = require('./routes/messages.routes');
+const notificationsRoutes = require('./routes/notifications.routes');
+const moderationRoutes = require('./routes/moderation.routes');
+const searchRoutes = require('./routes/search.routes');
+const feedRoutes = require('./routes/feed.routes');
+const trendingRoutes = require('./routes/trending.routes');
+const paymentRoutes = require('./routes/payment.routes');
+const notificationPrefRoutes = require('./routes/notification-preferences.routes');
 
 const app = express();
 
@@ -75,7 +86,7 @@ app.use(limiter);
 // ────────────────────────────────────────────────
 // DATABASE CONNECTION
 // ────────────────────────────────────────────────
-connectDB();
+// Note: connectDB() is called in the main function below to ensure proper startup order
 
 // ────────────────────────────────────────────────
 // DEBUG MIDDLEWARE - Find where "next is not a function" happens
@@ -92,8 +103,17 @@ app.use((req, res, next) => {
 // ────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/social', socialRoutes);
-// app.use('/api/users', userRoutes); // Uncomment after creating user.routes.js
+app.use('/api/users', userRoutes);
 app.use('/api/posts', postRoutes);
+app.use('/api/circles', circlesRoutes);
+app.use('/api/messages', messagesRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/moderation', moderationRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/api/feed', feedRoutes);
+app.use('/api/trending', trendingRoutes);
+app.use('/api/payments', paymentRoutes);
+app.use('/api/notifications/preferences', notificationPrefRoutes);
 
 // Health check route
 app.get('/api/health', (req, res) => {
@@ -148,14 +168,38 @@ app.use((err, req, res, next) => {
 // ────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 
-const server = app.listen(PORT, () => {
-  console.log(`═══════════════════════════════════════════════`);
-  console.log(`🚀 Wemsty Backend running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`CORS: Enabled for all origins`);
-  console.log(`MongoDB: Connected`);
-  console.log(`═══════════════════════════════════════════════`);
-});
+// Store server reference for graceful shutdown
+let server;
+
+// Main function to ensure proper startup order
+async function startServer() {
+  try {
+    // Connect to database first
+    await connectDB();
+    
+    // Create HTTP server
+    const httpServer = http.createServer(app);
+    
+    // Initialize realtime services
+    initializeRealtime(httpServer);
+    
+    // Start server
+    server = httpServer.listen(PORT, () => {
+      console.log(`═══════════════════════════════════════════════`);
+      console.log(`🚀 Wemsty Backend running on port ${PORT}`);
+      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`CORS: Enabled for all origins`);
+      console.log(`MongoDB: Connected`);
+      console.log(`Realtime namespace: /realtime`);
+      console.log(`═══════════════════════════════════════════════`);
+    });
+    
+    return server;
+  } catch (error) {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+}
 
 // ────────────────────────────────────────────────
 // GRACEFUL SHUTDOWN & ERROR HANDLING
@@ -165,25 +209,42 @@ const server = app.listen(PORT, () => {
 process.on('unhandledRejection', (err) => {
   console.error('❌ UNHANDLED REJECTION! Shutting down...');
   console.error(err.name, err.message);
-  server.close(() => {
+  if (server) {
+    server.close(() => {
+      process.exit(1);
+    });
+  } else {
     process.exit(1);
-  });
+  }
 });
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (err) => {
   console.error('❌ UNCAUGHT EXCEPTION! Shutting down...');
   console.error(err.name, err.message);
-  process.exit(1);
+  if (server) {
+    server.close(() => {
+      process.exit(1);
+    });
+  } else {
+    process.exit(1);
+  }
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('👋 SIGTERM received. Shutting down gracefully...');
-  server.close(() => {
-    console.log('✅ Process terminated');
+  if (server) {
+    server.close(() => {
+      console.log('✅ Process terminated');
+      process.exit(0);
+    });
+  } else {
     process.exit(0);
-  });
+  }
 });
+
+// Start the server
+startServer();
 
 module.exports = app;

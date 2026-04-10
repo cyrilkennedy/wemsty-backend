@@ -6,19 +6,17 @@ const BookmarkSchema = new mongoose.Schema({
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
-    index: true
+    required: true
   },
 
   post: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Post',
-    required: true,
-    index: true
+    required: true
   },
 
-  // Optional collections/folders for organizing bookmarks
-  collection: {
+  // Optional folders for organizing bookmarks
+  folderName: {
     type: String,
     default: 'default'
   }
@@ -34,15 +32,15 @@ const BookmarkSchema = new mongoose.Schema({
 // Unique constraint: user can only bookmark a post once
 BookmarkSchema.index({ user: 1, post: 1 }, { unique: true });
 
-// Query bookmarks by collection
-BookmarkSchema.index({ user: 1, collection: 1, createdAt: -1 });
+// Query bookmarks by folder
+BookmarkSchema.index({ user: 1, folderName: 1, createdAt: -1 });
 
 // ════════════════════════════════════════════════
 // STATIC METHODS
 // ════════════════════════════════════════════════
 
 // Toggle bookmark (bookmark if not bookmarked, unbookmark if already bookmarked)
-BookmarkSchema.statics.toggleBookmark = async function(userId, postId, collection = 'default') {
+BookmarkSchema.statics.toggleBookmark = async function(userId, postId, folderName = 'default') {
   const existing = await this.findOne({ user: userId, post: postId });
   
   if (existing) {
@@ -51,7 +49,7 @@ BookmarkSchema.statics.toggleBookmark = async function(userId, postId, collectio
     return { bookmarked: false, message: 'Bookmark removed' };
   } else {
     // Add bookmark
-    await this.create({ user: userId, post: postId, collection });
+    await this.create({ user: userId, post: postId, folderName });
     return { bookmarked: true, message: 'Post bookmarked' };
   }
 };
@@ -63,11 +61,11 @@ BookmarkSchema.statics.isBookmarkedByUser = async function(userId, postId) {
 
 // Get user's bookmarks
 BookmarkSchema.statics.getUserBookmarks = async function(userId, options = {}) {
-  const { page = 1, limit = 20, collection = null } = options;
+  const { page = 1, limit = 20, folderName = null } = options;
   
   const query = { user: userId };
-  if (collection) {
-    query.collection = collection;
+  if (folderName) {
+    query.folderName = folderName;
   }
   
   const bookmarks = await this.find(query)
@@ -95,19 +93,19 @@ BookmarkSchema.statics.getUserBookmarks = async function(userId, options = {}) {
   };
 };
 
-// Get user's bookmark collections
-BookmarkSchema.statics.getCollections = async function(userId) {
-  const collections = await this.distinct('collection', { user: userId });
+// Get user's bookmark folders
+BookmarkSchema.statics.getFolders = async function(userId) {
+  const folders = await this.distinct('folderName', { user: userId });
   
-  // Get count for each collection
-  const collectionsWithCounts = await Promise.all(
-    collections.map(async (collection) => {
-      const count = await this.countDocuments({ user: userId, collection });
-      return { name: collection, count };
+  // Get count for each folder
+  const foldersWithCounts = await Promise.all(
+    folders.map(async (folder) => {
+      const count = await this.countDocuments({ user: userId, folderName: folder });
+      return { name: folder, count };
     })
   );
   
-  return collectionsWithCounts;
+  return foldersWithCounts;
 };
 
 module.exports = mongoose.model('Bookmark', BookmarkSchema);

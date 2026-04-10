@@ -6,6 +6,7 @@ const Follow = require('../models/Follow.model');
 const Block = require('../models/Block.model');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
+const { writeAuditLog } = require('../services/audit.service');
 
 // ════════════════════════════════════════════════
 // GET CURRENT USER PROFILE
@@ -249,6 +250,14 @@ exports.updateUserRole = catchAsync(async (req, res, next) => {
   user.role = role;
   await user.save({ validateBeforeSave: false });
 
+  await writeAuditLog({
+    actor: req.user._id,
+    actionType: 'user.role.updated',
+    objectType: 'user',
+    objectId: user._id,
+    payload: { role }
+  });
+
   res.status(200).json({
     success: true,
     message: 'User role updated successfully',
@@ -294,8 +303,13 @@ exports.updateAccountStatus = catchAsync(async (req, res, next) => {
     await user.invalidateAllTokens();
   }
 
-  // TODO: Log the status change with reason
-  // await AuditLog.create({ user: id, action: 'status_change', reason, by: req.user._id });
+  await writeAuditLog({
+    actor: req.user._id,
+    actionType: 'user.status.updated',
+    objectType: 'user',
+    objectId: user._id,
+    payload: { status, reason: reason || '' }
+  });
 
   res.status(200).json({
     success: true,

@@ -7,6 +7,7 @@ const Mute = require('../models/Mute.model');
 const UserProfile = require('../models/UserProfile.model');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
+const { createNotification } = require('../services/notification.service');
 
 // ════════════════════════════════════════════════
 // FOLLOW SYSTEM
@@ -72,7 +73,15 @@ exports.followUser = catchAsync(async (req, res, next) => {
   });
 
   // TODO: Emit event for notifications
-  // eventEmitter.emit(isPrivate ? 'follow.requested' : 'follow.created', { followerId, userId });
+  if (!isPrivate) {
+    await createNotification({
+      recipient: userId,
+      actor: followerId,
+      type: 'follow',
+      objectType: 'user',
+      objectId: userId
+    });
+  }
 
   res.status(201).json({
     success: true,
