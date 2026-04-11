@@ -292,14 +292,19 @@ exports.createReply = catchAsync(async (req, res, next) => {
 exports.getHomeFeed = catchAsync(async (req, res, next) => {
   const userId = req.user._id;
   const { page = 1, limit = 20 } = req.query;
+  const parsedPage = Math.max(1, parseInt(page, 10) || 1);
+  const parsedLimit = Math.max(1, parseInt(limit, 10) || 20);
 
-  const result = await Post.getHomeFeed(userId, { page, limit });
+  const result = await Post.getHomeFeed(userId, { page: parsedPage, limit: parsedLimit });
   const postsWithLikeStatus = await attachViewerStateToPosts(result.posts, userId);
 
   res.status(200).json({
+    status: 'success',
     success: true,
     data: {
       feed: postsWithLikeStatus,
+      items: postsWithLikeStatus,
+      posts: postsWithLikeStatus,
       pagination: result.pagination
     }
   });
@@ -309,14 +314,19 @@ exports.getHomeFeed = catchAsync(async (req, res, next) => {
 exports.getSphereFeed = catchAsync(async (req, res, next) => {
   const userId = req.user?._id;
   const { page = 1, limit = 20, mode = 'top' } = req.query;
+  const parsedPage = Math.max(1, parseInt(page, 10) || 1);
+  const parsedLimit = Math.max(1, parseInt(limit, 10) || 20);
 
-  const result = await Post.getSphereFeed(userId, { page, limit, mode });
+  const result = await Post.getSphereFeed(userId, { page: parsedPage, limit: parsedLimit, mode });
   const feed = await attachViewerStateToPosts(result.posts, userId);
 
   res.status(200).json({
+    status: 'success',
     success: true,
     data: {
       feed,
+      items: feed,
+      posts: feed,
       pagination: result.pagination
     }
   });
@@ -335,20 +345,25 @@ exports.getCategoryFeed = catchAsync(async (req, res, next) => {
   const userId = req.user?._id;
   const { categorySlug } = req.params;
   const { page = 1, limit = 20, mode = 'latest' } = req.query;
+  const parsedPage = Math.max(1, parseInt(page, 10) || 1);
+  const parsedLimit = Math.max(1, parseInt(limit, 10) || 20);
   const category = getPostCategory(categorySlug);
 
   if (!category) {
     return next(new AppError('Category not found', 404));
   }
 
-  const result = await Post.getCategoryFeed(category.slug, userId, { page, limit, mode });
+  const result = await Post.getCategoryFeed(category.slug, userId, { page: parsedPage, limit: parsedLimit, mode });
   const feed = await attachViewerStateToPosts(result.posts, userId);
 
   res.status(200).json({
+    status: 'success',
     success: true,
     data: {
       category,
       feed,
+      items: feed,
+      posts: feed,
       pagination: result.pagination
     }
   });

@@ -22,8 +22,13 @@ exports.getHomeFeed = catchAsync(async (req, res, next) => {
   });
 
   res.status(200).json({
+    success: true,
     status: 'success',
-    data: feed
+    data: {
+      ...feed,
+      feed: feed.items || [],
+      posts: feed.items || []
+    }
   });
 });
 
@@ -47,8 +52,13 @@ exports.getSphereFeed = catchAsync(async (req, res, next) => {
   });
 
   res.status(200).json({
+    success: true,
     status: 'success',
-    data: feed
+    data: {
+      ...feed,
+      feed: feed.items || [],
+      posts: feed.items || []
+    }
   });
 });
 
@@ -72,8 +82,13 @@ exports.getCategoryFeed = catchAsync(async (req, res, next) => {
   });
 
   res.status(200).json({
+    success: true,
     status: 'success',
-    data: feed
+    data: {
+      ...feed,
+      feed: feed.items || feed.posts || [],
+      posts: feed.items || feed.posts || []
+    }
   });
 });
 
