@@ -468,11 +468,16 @@ Valid statuses: `active`, `suspended`, `banned`
 | GET | `/posts/feed/home` | Private | Following-based home feed |
 | GET | `/posts/feed/sphere` | Private | Authenticated discovery feed |
 | POST | `/posts` | Private | Create post |
-| POST | `/posts/repost` | Private | Repost or quote repost |
+| POST | `/posts/repost` | Private | Repost, quote repost, or toggle off existing repost |
+| DELETE | `/posts/repost/:postId` | Private | Explicitly remove repost/quote repost |
 | POST | `/posts/reply` | Private | Reply to post |
+| PATCH | `/posts/reply/:replyId` | Private | Edit own comment (reply) |
+| DELETE | `/posts/reply/:replyId` | Private | Delete own comment (reply) |
 | POST | `/posts/:postId/like` | Private | Toggle like |
+| DELETE | `/posts/:postId/like` | Private | Explicit unlike (idempotent) |
 | GET | `/posts/:postId/likes` | Private | List post likes |
 | POST | `/posts/:postId/bookmark` | Private | Toggle bookmark |
+| DELETE | `/posts/:postId/bookmark` | Private | Explicit unbookmark (idempotent) |
 | GET | `/posts/bookmarks/me` | Private | List own bookmarks |
 | DELETE | `/posts/:postId` | Private | Delete own post |
 
@@ -515,6 +520,11 @@ Repost payload:
 }
 ```
 
+Repost behavior:
+- If no active repost exists, this creates one.
+- If an active repost exists and `text` is empty/missing, it removes the repost.
+- If an active repost exists and `text` is provided, it updates it to a quote repost.
+
 Reply payload:
 
 ```json
@@ -523,6 +533,22 @@ Reply payload:
   "text": "Reply content"
 }
 ```
+
+Edit comment payload (`PATCH /posts/reply/:replyId`):
+
+```json
+{
+  "text": "Updated comment text"
+}
+```
+
+Interaction summary:
+- Like: `POST /posts/:postId/like`
+- Unlike: `DELETE /posts/:postId/like`
+- Bookmark: `POST /posts/:postId/bookmark`
+- Unbookmark: `DELETE /posts/:postId/bookmark`
+- Repost/quote/toggle: `POST /posts/repost`
+- Explicit unrepost: `DELETE /posts/repost/:postId`
 
 ---
 
@@ -973,4 +999,4 @@ In development, CORS allows all origins. Restrict allowed origins in production 
 
 ---
 
-**Last updated:** 2026-04-10
+**Last updated:** 2026-04-11

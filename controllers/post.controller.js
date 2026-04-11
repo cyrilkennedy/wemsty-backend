@@ -47,7 +47,7 @@ async function attachViewerStateToPosts(posts, userId) {
 
 // Create a post
 exports.createPost = catchAsync(async (req, res, next) => {
-  const { text, media, visibility, sphereEligible, category } = req.body;
+  const { text, media, visibility, sphereEligible, category } = req.body || {};
   const userId = req.user._id;
   const normalizedCategory = normalizeCategorySlug(category || DEFAULT_POST_CATEGORY);
   const resolvedVisibility = visibility || 'public';
@@ -129,8 +129,13 @@ exports.createPost = catchAsync(async (req, res, next) => {
 
 // Create a repost
 exports.createRepost = catchAsync(async (req, res, next) => {
-  const { postId, text } = req.body;
+  const { postId, text } = req.body || {};
   const userId = req.user._id;
+  const quoteText = typeof text === 'string' ? text.trim() : '';
+
+  if (!postId) {
+    return next(new AppError('postId is required', 400));
+  }
 
   // Find original post
   const originalPost = await Post.findById(postId);
@@ -149,21 +154,62 @@ exports.createRepost = catchAsync(async (req, res, next) => {
   const existingRepost = await Post.findOne({
     author: userId,
     originalPost: postId,
+    postType: { $in: ['repost', 'quote'] },
     status: 'active'
   });
 
   if (existingRepost) {
-    return next(new AppError('You have already reposted this', 400));
+    if (quoteText) {
+      existingRepost.postType = 'quote';
+      existingRepost.content = {
+        ...existingRepost.content,
+        text: quoteText
+      };
+
+      await existingRepost.save({ validateBeforeSave: false });
+      await existingRepost.populate([
+        { path: 'author', select: 'username profile.displayName profile.avatar' },
+        {
+          path: 'originalPost',
+          populate: { path: 'author', select: 'username profile.displayName profile.avatar' }
+        }
+      ]);
+
+      return res.status(200).json({
+        success: true,
+        message: 'Repost updated successfully',
+        data: {
+          post: existingRepost,
+          reposted: true
+        }
+      });
+    }
+
+    existingRepost.status = 'deleted';
+    await existingRepost.save({ validateBeforeSave: false });
+
+    await Post.findByIdAndUpdate(postId, {
+      $inc: { 'engagement.reposts': -1 }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Repost removed successfully',
+      data: {
+        reposted: false,
+        postId
+      }
+    });
   }
 
   // Create repost
   const repost = await Post.create({
     author: userId,
-    postType: text ? 'quote' : 'repost',
+    postType: quoteText ? 'quote' : 'repost',
     originalPost: postId,
     category: originalPost.category,
     content: {
-      text: text || ''
+      text: quoteText || ''
     },
     visibility: originalPost.visibility,
     sphereEligible: originalPost.visibility === 'public'
@@ -189,12 +235,12 @@ exports.createRepost = catchAsync(async (req, res, next) => {
     type: 'repost',
     objectType: 'post',
     objectId: originalPost._id,
-    previewText: text || originalPost.content?.text || ''
+    previewText: quoteText || originalPost.content?.text || ''
   });
 
-  if (text) {
+  if (quoteText) {
     await createMentionNotifications({
-      text,
+      text: quoteText,
       actor: userId,
       type: 'mention',
       objectType: 'post',
@@ -204,14 +250,17 @@ exports.createRepost = catchAsync(async (req, res, next) => {
 
   res.status(201).json({
     success: true,
-    message: 'Reposted successfully',
-    data: { post: repost }
+    message: quoteText ? 'Quote reposted successfully' : 'Reposted successfully',
+    data: {
+      post: repost,
+      reposted: true
+    }
   });
 });
 
 // Create a reply/comment
 exports.createReply = catchAsync(async (req, res, next) => {
-  const { postId, text } = req.body;
+  const { postId, text } = req.body || {};
   const userId = req.user._id;
 
   if (!text || text.trim() === '') {
@@ -281,6 +330,82 @@ exports.createReply = catchAsync(async (req, res, next) => {
     success: true,
     message: 'Reply posted successfully',
     data: { reply }
+  });
+});
+
+// Edit a reply/comment
+exports.editReply = catchAsync(async (req, res, next) => {
+  const { replyId } = req.params;
+  const userId = req.user._id;
+  const { text } = req.body || {};
+
+  if (!text || text.trim() === '') {
+    return next(new AppError('Reply text is required', 400));
+  }
+
+  if (text.length > 500) {
+    return next(new AppError('Reply text cannot exceed 500 characters', 400));
+  }
+
+  const reply = await Post.findById(replyId);
+  if (!reply || reply.status === 'deleted' || reply.postType !== 'reply') {
+    return next(new AppError('Comment not found', 404));
+  }
+
+  if (!reply.author.equals(userId) && req.user.role !== 'admin') {
+    return next(new AppError('You can only edit your own comment', 403));
+  }
+
+  reply.content = {
+    ...reply.content,
+    text: text.trim()
+  };
+  reply.isEdited = true;
+  reply.editedAt = new Date();
+
+  await reply.save({ validateBeforeSave: false });
+  await reply.populate([
+    { path: 'author', select: 'username profile.displayName profile.avatar' },
+    { path: 'replyTo', select: 'username profile.displayName' }
+  ]);
+
+  res.status(200).json({
+    success: true,
+    message: 'Comment updated successfully',
+    data: { reply }
+  });
+});
+
+// Delete a reply/comment
+exports.deleteReply = catchAsync(async (req, res, next) => {
+  const { replyId } = req.params;
+  const userId = req.user._id;
+
+  const reply = await Post.findById(replyId);
+  if (!reply || reply.status === 'deleted' || reply.postType !== 'reply') {
+    return next(new AppError('Comment not found', 404));
+  }
+
+  if (!reply.author.equals(userId) && req.user.role !== 'admin') {
+    return next(new AppError('You can only delete your own comment', 403));
+  }
+
+  reply.status = 'deleted';
+  await reply.save({ validateBeforeSave: false });
+
+  if (reply.parentPost) {
+    await Post.findByIdAndUpdate(reply.parentPost, {
+      $inc: { 'engagement.comments': -1 }
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'Comment deleted successfully',
+    data: {
+      deleted: true,
+      replyId
+    }
   });
 });
 
@@ -508,7 +633,7 @@ exports.getUserPosts = catchAsync(async (req, res, next) => {
 exports.toggleLike = catchAsync(async (req, res, next) => {
   const { postId } = req.params;
   const userId = req.user._id;
-  const { source } = req.body;
+  const { source } = req.body || {};
 
   // Check if post exists
   const post = await Post.findById(postId);
@@ -571,6 +696,56 @@ exports.toggleLike = catchAsync(async (req, res, next) => {
   });
 });
 
+// Explicit unlike endpoint (idempotent)
+exports.unlikePost = catchAsync(async (req, res, next) => {
+  const { postId } = req.params;
+  const userId = req.user._id;
+
+  const post = await Post.findById(postId);
+  if (!post || post.status === 'deleted') {
+    return next(new AppError('Post not found', 404));
+  }
+
+  const existingLike = await Like.findOne({ user: userId, post: postId });
+  if (existingLike) {
+    await existingLike.remove();
+  }
+
+  const updatedPost = await Post.findById(postId);
+  if (updatedPost) {
+    updatedPost.calculateSphereScore();
+    await updatedPost.save({ validateBeforeSave: false });
+  }
+
+  const likesCount = updatedPost?.engagement?.likes ?? post.engagement.likes;
+
+  realtimeEvents.emit('post.liked', {
+    postId: post._id,
+    likesCount,
+    userId
+  });
+
+  await kafkaManager.emitPostEvent('liked', post._id, userId, {
+    likesCount,
+    isLiked: false
+  });
+
+  if (algoliaService.client && post.visibility === 'public') {
+    await algoliaService.updatePost(post._id, {
+      'engagement.likes': likesCount
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'Post unliked',
+    data: {
+      liked: false,
+      likesCount
+    }
+  });
+});
+
 // Get users who liked a post
 exports.getPostLikes = catchAsync(async (req, res, next) => {
   const { postId } = req.params;
@@ -597,7 +772,7 @@ exports.getPostLikes = catchAsync(async (req, res, next) => {
 exports.toggleBookmark = catchAsync(async (req, res, next) => {
   const { postId } = req.params;
   const userId = req.user._id;
-  const { collection } = req.body;
+  const { collection } = req.body || {};
 
   // Check if post exists
   const post = await Post.findById(postId);
@@ -612,6 +787,63 @@ exports.toggleBookmark = catchAsync(async (req, res, next) => {
     message: result.message,
     data: {
       bookmarked: result.bookmarked
+    }
+  });
+});
+
+// Explicit unbookmark endpoint (idempotent)
+exports.unbookmarkPost = catchAsync(async (req, res, next) => {
+  const { postId } = req.params;
+  const userId = req.user._id;
+
+  const post = await Post.findById(postId);
+  if (!post || post.status === 'deleted') {
+    return next(new AppError('Post not found', 404));
+  }
+
+  const existingBookmark = await Bookmark.findOne({ user: userId, post: postId });
+  if (existingBookmark) {
+    await existingBookmark.remove();
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'Bookmark removed',
+    data: {
+      bookmarked: false
+    }
+  });
+});
+
+// Remove repost explicitly
+exports.removeRepost = catchAsync(async (req, res, next) => {
+  const { postId } = req.params;
+  const userId = req.user._id;
+
+  const repost = await Post.findOne({
+    author: userId,
+    originalPost: postId,
+    postType: { $in: ['repost', 'quote'] },
+    status: 'active'
+  });
+
+  if (!repost) {
+    return next(new AppError('You have not reposted this post', 404));
+  }
+
+  repost.status = 'deleted';
+  await repost.save({ validateBeforeSave: false });
+
+  await Post.findByIdAndUpdate(postId, {
+    $inc: { 'engagement.reposts': -1 }
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Repost removed successfully',
+    data: {
+      reposted: false,
+      postId
     }
   });
 });

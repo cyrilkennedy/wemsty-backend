@@ -116,6 +116,7 @@ router.post('/', postLimiter, postController.createPost);
  * @access  Private
  */
 router.post('/repost', postLimiter, postController.createRepost);
+router.delete('/repost/:postId', interactionLimiter, postController.removeRepost);
 
 /**
  * @route   POST /api/posts/reply
@@ -123,6 +124,8 @@ router.post('/repost', postLimiter, postController.createRepost);
  * @access  Private
  */
 router.post('/reply', postLimiter, postController.createReply);
+router.patch('/reply/:replyId', interactionLimiter, postController.editReply);
+router.delete('/reply/:replyId', interactionLimiter, postController.deleteReply);
 
 /**
  * @route   POST /api/posts/:postId/like
@@ -130,6 +133,7 @@ router.post('/reply', postLimiter, postController.createReply);
  * @access  Private
  */
 router.post('/:postId/like', interactionLimiter, postController.toggleLike);
+router.delete('/:postId/like', interactionLimiter, postController.unlikePost);
 
 /**
  * @route   GET /api/posts/:postId/likes
@@ -144,6 +148,7 @@ router.get('/:postId/likes', postController.getPostLikes);
  * @access  Private
  */
 router.post('/:postId/bookmark', postController.toggleBookmark);
+router.delete('/:postId/bookmark', postController.unbookmarkPost);
 
 /**
  * @route   GET /api/posts/bookmarks/me
