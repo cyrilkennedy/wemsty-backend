@@ -1,12 +1,27 @@
 // controllers/user.controller.js
 
 const User = require('../models/User.model');
+const Post = require('../models/Post.model');
 const UserProfile = require('../models/UserProfile.model');
 const Follow = require('../models/Follow.model');
 const Block = require('../models/Block.model');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
 const { writeAuditLog } = require('../services/audit.service');
+const { sanitizeExternalUrl } = require('../utils/url-sanitizer');
+const FEED_VISIBLE_POST_TYPES = ['original', 'quote'];
+
+async function toSafeUserWithLiveThoughtCount(user) {
+  const safeUser = user.toSafeObject();
+  const thoughtsCount = await Post.countDocuments({
+    author: user._id,
+    postType: { $in: FEED_VISIBLE_POST_TYPES },
+    status: 'active'
+  });
+
+  safeUser.posts_count = thoughtsCount;
+  return safeUser;
+}
 
 // ════════════════════════════════════════════════
 // GET CURRENT USER PROFILE
@@ -18,10 +33,12 @@ exports.getProfile = catchAsync(async (req, res, next) => {
     return next(new AppError('User not found', 404));
   }
 
+  const safeUser = await toSafeUserWithLiveThoughtCount(user);
+
   res.status(200).json({
     success: true,
     data: {
-      user: user.toSafeObject()
+      user: safeUser
     }
   });
 });
@@ -84,12 +101,13 @@ exports.updateProfile = catchAsync(async (req, res, next) => {
   });
 
   await req.user.save({ validateBeforeSave: true });
+  const safeUser = await toSafeUserWithLiveThoughtCount(req.user);
 
   res.status(200).json({
     success: true,
     message: 'Profile updated successfully',
     data: {
-      user: req.user.toSafeObject()
+      user: safeUser
     }
   });
 });
@@ -156,7 +174,7 @@ exports.getUserByUsername = catchAsync(async (req, res, next) => {
     username: user.username,
     profile: {
       displayName: user.profile?.displayName,
-      avatar: user.profile?.avatar,
+      avatar: sanitizeExternalUrl(user.profile?.avatar),
       bio: user.profile?.bio,
       location: user.profile?.location,
       website: user.profile?.website

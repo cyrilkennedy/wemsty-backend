@@ -14,6 +14,7 @@ const {
 } = require('./messaging.service');
 
 let ioInstance = null;
+const emitLegacySocketEvents = process.env.ENABLE_SOCKET_LEGACY_EVENTS === 'true';
 const userSocketCounts = new Map();
 const userPresence = new Map();
 const channelTypingUsers = new Map();
@@ -198,8 +199,10 @@ function initializeRealtime(httpServer) {
     // Global updates for clients that did not join post rooms
     namespace.emit('post.liked.updated', payload);
 
-    // Backward-compat event name
-    namespace.emit('post:liked', payload);
+    // Backward-compat event name (opt-in to avoid duplicate handling in clients)
+    if (emitLegacySocketEvents) {
+      namespace.emit('post:liked', payload);
+    }
   });
 
   realtimeEvents.on('post.reposted', ({ postId, repostsCount, userId, reposted }) => {
@@ -212,7 +215,9 @@ function initializeRealtime(httpServer) {
 
     namespace.to(`post:${postId.toString()}`).emit('post.reposted.updated', payload);
     namespace.emit('post.reposted.updated', payload);
-    namespace.emit('post:reposted', payload);
+    if (emitLegacySocketEvents) {
+      namespace.emit('post:reposted', payload);
+    }
   });
 
   namespace.on('connection', async (socket) => {

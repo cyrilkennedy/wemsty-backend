@@ -3,6 +3,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { sanitizeExternalUrl } = require('../utils/url-sanitizer');
 
 const UserSchema = new mongoose.Schema({
   // ────────────────────────────────────────────────
@@ -315,6 +316,9 @@ UserSchema.methods.invalidateAllTokens = async function() {
 // Get safe user object (without sensitive data)
 UserSchema.methods.toSafeObject = function() {
   const obj = this.toObject();
+  if (obj?.profile?.avatar) {
+    obj.profile.avatar = sanitizeExternalUrl(obj.profile.avatar);
+  }
   delete obj.password;
   delete obj.passwordResetToken;
   delete obj.passwordResetExpires;

@@ -1,5 +1,6 @@
 // controllers/post.controller.js
 
+const mongoose = require('mongoose');
 const Post = require('../models/Post.model');
 const Like = require('../models/Like.model');
 const Bookmark = require('../models/Bookmark.model');
@@ -21,16 +22,37 @@ const {
 const { kafkaManager } = require('../config/kafka');
 const realtimeEvents = require('../services/realtime-events.service');
 const algoliaService = require('../services/algolia.service');
+const { sanitizeExternalUrl } = require('../utils/url-sanitizer');
 
 const REPOST_TYPES = ['repost', 'quote'];
+const FEED_VISIBLE_POST_TYPES = ['original', 'quote'];
 const LIKE_SOURCE_FALLBACK = 'home_feed';
 
-function toClientPost(post) {
+function toClientPost(post, countOverrides = {}) {
   const plainPost = typeof post?.toObject === 'function' ? post.toObject() : post;
-  const engagement = plainPost?.engagement || {};
+  const baseEngagement = plainPost?.engagement || {};
+  const engagement = {
+    ...baseEngagement,
+    likes: Number(countOverrides.likes ?? baseEngagement.likes ?? 0),
+    comments: Number(countOverrides.comments ?? baseEngagement.comments ?? 0),
+    reposts: Number(countOverrides.reposts ?? baseEngagement.reposts ?? 0)
+  };
+  const sanitizedAuthor = plainPost?.author
+    ? {
+      ...plainPost.author,
+      profile: plainPost.author.profile
+        ? {
+          ...plainPost.author.profile,
+          avatar: sanitizeExternalUrl(plainPost.author.profile.avatar)
+        }
+        : plainPost.author.profile
+    }
+    : plainPost.author;
 
   return {
     ...plainPost,
+    author: sanitizedAuthor,
+    engagement,
     likesCount: Number(engagement.likes || 0),
     commentsCount: Number(engagement.comments || 0),
     repostsCount: Number(engagement.reposts || 0),
@@ -80,6 +102,87 @@ async function syncPostCounters(postId, counters = {}) {
   await updatedPost.save({ validateBeforeSave: false });
 
   return updatedPost;
+}
+
+async function getEngagementCountMaps(postIds = []) {
+  const ids = [...new Set(postIds.map((id) => id?.toString()).filter(Boolean))];
+  if (ids.length === 0) {
+    return {
+      likesByPostId: new Map(),
+      commentsByPostId: new Map(),
+      repostsByPostId: new Map()
+    };
+  }
+
+  const objectIds = ids
+    .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+
+  if (objectIds.length === 0) {
+    return {
+      likesByPostId: new Map(),
+      commentsByPostId: new Map(),
+      repostsByPostId: new Map()
+    };
+  }
+
+  const [likesAgg, commentsAgg, repostsAgg] = await Promise.all([
+    Like.aggregate([
+      { $match: { post: { $in: objectIds } } },
+      { $group: { _id: '$post', users: { $addToSet: '$user' } } },
+      { $project: { count: { $size: '$users' } } }
+    ]),
+    Post.aggregate([
+      {
+        $match: {
+          parentPost: { $in: objectIds },
+          postType: 'reply',
+          status: 'active'
+        }
+      },
+      { $group: { _id: '$parentPost', count: { $sum: 1 } } }
+    ]),
+    Post.aggregate([
+      {
+        $match: {
+          originalPost: { $in: objectIds },
+          postType: { $in: REPOST_TYPES },
+          status: 'active'
+        }
+      },
+      { $group: { _id: { post: '$originalPost', author: '$author' } } },
+      { $group: { _id: '$_id.post', count: { $sum: 1 } } }
+    ])
+  ]);
+
+  return {
+    likesByPostId: new Map(likesAgg.map((item) => [item._id.toString(), Number(item.count || 0)])),
+    commentsByPostId: new Map(commentsAgg.map((item) => [item._id.toString(), Number(item.count || 0)])),
+    repostsByPostId: new Map(repostsAgg.map((item) => [item._id.toString(), Number(item.count || 0)]))
+  };
+}
+
+function getCountOverridesForPost(postId, countMaps) {
+  const key = postId?.toString();
+  return {
+    likes: countMaps.likesByPostId.get(key) ?? 0,
+    comments: countMaps.commentsByPostId.get(key) ?? 0,
+    reposts: countMaps.repostsByPostId.get(key) ?? 0
+  };
+}
+
+async function syncUserThoughtsCount(userId) {
+  const thoughtsCount = await Post.countDocuments({
+    author: userId,
+    postType: { $in: FEED_VISIBLE_POST_TYPES },
+    status: 'active'
+  });
+
+  await User.findByIdAndUpdate(userId, {
+    $set: { posts_count: thoughtsCount }
+  });
+
+  return thoughtsCount;
 }
 
 async function getCanonicalActiveRepost(userId, postId) {
@@ -149,11 +252,19 @@ async function getCanonicalBookmark(userId, postId) {
 }
 
 async function attachViewerStateToPosts(posts, userId) {
-  if (!userId || posts.length === 0) {
-    return posts.map((post) => toClientPost(post));
+  if (posts.length === 0) {
+    return [];
   }
 
   const postIds = posts.map((post) => post._id);
+  const countMaps = await getEngagementCountMaps(postIds);
+
+  if (!userId) {
+    return posts.map((post) =>
+      toClientPost(post, getCountOverridesForPost(post._id, countMaps))
+    );
+  }
+
   const [userLikes, userBookmarks, userReposts] = await Promise.all([
     Like.find({
       user: userId,
@@ -176,7 +287,7 @@ async function attachViewerStateToPosts(posts, userId) {
   const repostedPostIds = new Set(userReposts.map((repost) => repost.originalPost.toString()));
 
   return posts.map((post) => ({
-    ...toClientPost(post),
+    ...toClientPost(post, getCountOverridesForPost(post._id, countMaps)),
     isLiked: likedPostIds.has(post._id.toString()),
     liked: likedPostIds.has(post._id.toString()),
     isBookmarked: bookmarkedPostIds.has(post._id.toString()),
@@ -223,10 +334,8 @@ exports.createPost = catchAsync(async (req, res, next) => {
     sphereEligible: resolvedVisibility === 'public' ? sphereEligible !== false : false
   });
 
-  // Increment user's post count
-  await User.findByIdAndUpdate(userId, {
-    $inc: { posts_count: 1 }
-  });
+  // Sync user's thought count (original + quote posts)
+  await syncUserThoughtsCount(userId);
 
   // Populate author details
   await post.populate('author', 'username profile.displayName profile.avatar');
@@ -307,6 +416,7 @@ exports.createRepost = catchAsync(async (req, res, next) => {
       };
 
       await existingRepost.save({ validateBeforeSave: false });
+      await syncUserThoughtsCount(userId);
       await existingRepost.populate([
         { path: 'author', select: 'username profile.displayName profile.avatar' },
         {
@@ -427,6 +537,7 @@ exports.createRepost = catchAsync(async (req, res, next) => {
   });
 
   if (quoteText) {
+    await syncUserThoughtsCount(userId);
     await createMentionNotifications({
       text: quoteText,
       actor: userId,
@@ -695,7 +806,7 @@ exports.getPost = catchAsync(async (req, res, next) => {
   const { postId } = req.params;
   const userId = req.user?._id;
 
-  const post = await Post.findById(postId)
+  let post = await Post.findById(postId)
     .populate('author', 'username profile.displayName profile.avatar isEmailVerified')
     .populate({
       path: 'originalPost',
@@ -706,6 +817,24 @@ exports.getPost = catchAsync(async (req, res, next) => {
     return next(new AppError('Post not found', 404));
   }
 
+  // Plain reposts should resolve to their original post in detail views.
+  if (post.postType === 'repost' && post.originalPost) {
+    const originalPostId = post.originalPost._id || post.originalPost;
+    const originalPost = await Post.findById(originalPostId)
+      .populate('author', 'username profile.displayName profile.avatar isEmailVerified')
+      .populate({
+        path: 'originalPost',
+        populate: { path: 'author', select: 'username profile.displayName profile.avatar' }
+      });
+
+    if (originalPost && originalPost.status !== 'deleted') {
+      post = originalPost;
+    }
+  }
+  const resolvedPostId = post._id;
+  const countMaps = await getEngagementCountMaps([resolvedPostId]);
+  const countOverrides = getCountOverridesForPost(resolvedPostId, countMaps);
+
   // Check if user can view
   if (userId) {
     const canView = await post.canBeViewedBy(userId);
@@ -715,11 +844,11 @@ exports.getPost = catchAsync(async (req, res, next) => {
 
     // Check if liked by current user
     const [isLiked, isBookmarked, repostDoc] = await Promise.all([
-      Like.isLikedByUser(userId, postId),
-      Bookmark.exists({ user: userId, post: postId }),
+      Like.isLikedByUser(userId, resolvedPostId),
+      Bookmark.exists({ user: userId, post: resolvedPostId }),
       Post.findOne({
         author: userId,
-        originalPost: postId,
+        originalPost: resolvedPostId,
         postType: { $in: REPOST_TYPES },
         status: 'active'
       }).select('_id')
@@ -733,7 +862,7 @@ exports.getPost = catchAsync(async (req, res, next) => {
       success: true,
       data: {
         post: {
-          ...toClientPost(post),
+          ...toClientPost(post, countOverrides),
           isLiked,
           liked: !!isLiked,
           isBookmarked: !!isBookmarked,
@@ -747,7 +876,7 @@ exports.getPost = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
-    data: { post: toClientPost(post) }
+    data: { post: toClientPost(post, countOverrides) }
   });
 });
 
@@ -761,6 +890,8 @@ exports.getPostThread = catchAsync(async (req, res, next) => {
   if (!post || post.status === 'deleted') {
     return next(new AppError('Post not found', 404));
   }
+  const allPostIds = [post._id, ...replies.map((reply) => reply._id)];
+  const countMaps = await getEngagementCountMaps(allPostIds);
 
   // Check if user can view
   if (userId) {
@@ -770,7 +901,6 @@ exports.getPostThread = catchAsync(async (req, res, next) => {
     }
 
     // Check liked status for all posts in thread
-    const allPostIds = [post._id, ...replies.map(r => r._id)];
     const userLikes = await Like.find({ 
       user: userId, 
       post: { $in: allPostIds } 
@@ -782,12 +912,12 @@ exports.getPostThread = catchAsync(async (req, res, next) => {
       success: true,
       data: {
         post: {
-          ...toClientPost(post),
+          ...toClientPost(post, getCountOverridesForPost(post._id, countMaps)),
           isLiked: likedPostIds.has(post._id.toString()),
           liked: likedPostIds.has(post._id.toString())
         },
         replies: replies.map(r => ({
-          ...toClientPost(r),
+          ...toClientPost(r, getCountOverridesForPost(r._id, countMaps)),
           isLiked: likedPostIds.has(r._id.toString()),
           liked: likedPostIds.has(r._id.toString())
         }))
@@ -798,8 +928,11 @@ exports.getPostThread = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     data: {
-      post: toClientPost(post),
-      replies: replies.map((reply) => toClientPost(reply))
+      post: toClientPost(post, getCountOverridesForPost(post._id, countMaps)),
+      replies: replies.map((reply) => toClientPost(
+        reply,
+        getCountOverridesForPost(reply._id, countMaps)
+      ))
     }
   });
 });
@@ -807,7 +940,7 @@ exports.getPostThread = catchAsync(async (req, res, next) => {
 // Get user's posts (profile feed)
 exports.getUserPosts = catchAsync(async (req, res, next) => {
   const { username } = req.params;
-  const { page = 1, limit = 20, includeReplies } = req.query;
+  const { page = 1, limit = 20, includeReplies, includeReposts } = req.query;
   const viewerId = req.user?._id;
 
   // Find user
@@ -827,13 +960,18 @@ exports.getUserPosts = catchAsync(async (req, res, next) => {
   const result = await Post.getUserPosts(user._id, viewerId, {
     page,
     limit,
-    includeReplies: includeReplies === 'true'
+    includeReplies: includeReplies === 'true',
+    includeReposts: includeReposts === 'true'
   });
+  const countMaps = await getEngagementCountMaps(result.posts.map((post) => post._id));
 
   res.status(200).json({
     success: true,
     data: {
-      posts: result.posts.map((post) => toClientPost(post)),
+      posts: result.posts.map((post) => toClientPost(
+        post,
+        getCountOverridesForPost(post._id, countMaps)
+      )),
       pagination: result.pagination
     }
   });
@@ -1167,9 +1305,10 @@ exports.removeRepost = catchAsync(async (req, res, next) => {
     originalPost: postId,
     postType: { $in: REPOST_TYPES },
     status: 'active'
-  }).select('_id');
+  }).select('_id postType');
 
   const repostIds = reposts.map((item) => item._id);
+  const removedQuote = reposts.some((item) => item.postType === 'quote');
 
   if (repostIds.length === 0) {
     const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
@@ -1197,6 +1336,9 @@ exports.removeRepost = catchAsync(async (req, res, next) => {
     { _id: { $in: repostIds } },
     { $set: { status: 'deleted' } }
   );
+  if (removedQuote) {
+    await syncUserThoughtsCount(userId);
+  }
   const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
 
   realtimeEvents.emit('post.reposted', {
@@ -1259,10 +1401,9 @@ exports.deletePost = catchAsync(async (req, res, next) => {
   post.status = 'deleted';
   await post.save();
 
-  // Decrement user's post count
-  await User.findByIdAndUpdate(post.author, {
-    $inc: { posts_count: -1 }
-  });
+  if (FEED_VISIBLE_POST_TYPES.includes(post.postType)) {
+    await syncUserThoughtsCount(post.author);
+  }
 
   res.status(200).json({
     success: true,
@@ -1298,6 +1439,7 @@ exports.searchPosts = catchAsync(async (req, res, next) => {
   // Text search
   const searchQuery = {
     $text: { $search: q },
+    postType: { $in: FEED_VISIBLE_POST_TYPES },
     author: { $nin: blockedIds },
     visibility: 'public',
     status: 'active'
@@ -1315,6 +1457,7 @@ exports.searchPosts = catchAsync(async (req, res, next) => {
 
   const total = await Post.countDocuments({
     $text: { $search: q },
+    postType: { $in: FEED_VISIBLE_POST_TYPES },
     ...(normalizedCategory ? { category: normalizedCategory } : {}),
     visibility: 'public',
     status: 'active'
@@ -1367,6 +1510,7 @@ exports.getTrending = catchAsync(async (req, res, next) => {
 
   const trendingQuery = {
     createdAt: { $gte: timeThreshold },
+    postType: { $in: FEED_VISIBLE_POST_TYPES },
     author: { $nin: blockedIds },
     visibility: 'public',
     status: 'active'

@@ -1,6 +1,7 @@
 // controllers/auth.controller.js
 
 const User = require('../models/User.model');
+const Post = require('../models/Post.model');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
 const jwt = require('jsonwebtoken');
@@ -11,6 +12,19 @@ const PasswordResetFeedback = require('../models/PasswordResetFeedback.model');
 const { sendOTPEmail, sendPasswordResetSuccessEmail } = require('../utils/emailService');
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const FEED_VISIBLE_POST_TYPES = ['original', 'quote'];
+
+async function toSafeUserWithLiveThoughtCount(user) {
+  const safeUser = user.toSafeObject();
+  const thoughtsCount = await Post.countDocuments({
+    author: user._id,
+    postType: { $in: FEED_VISIBLE_POST_TYPES },
+    status: 'active'
+  });
+
+  safeUser.posts_count = thoughtsCount;
+  return safeUser;
+}
 
 // ════════════════════════════════════════════════
 // HELPER FUNCTIONS
@@ -53,12 +67,14 @@ const createAndSendTokens = async (user, statusCode, res, message = 'Success') =
     maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
   });
 
+  const safeUser = await toSafeUserWithLiveThoughtCount(user);
+
   // Send response
   res.status(statusCode).json({
     status: 'success',
     message,
     data: {
-      user: user.toSafeObject(),
+      user: safeUser,
       accessToken,
       refreshToken
     }
@@ -115,7 +131,7 @@ exports.signup = catchAsync(async (req, res, next) => {
   // await sendVerificationEmail(user.email, verificationToken);
 
   // Send tokens
-  createAndSendTokens(user, 201, res, 'Account created successfully');
+  return createAndSendTokens(user, 201, res, 'Account created successfully');
 });
 
 // ════════════════════════════════════════════════
@@ -164,7 +180,7 @@ exports.login = catchAsync(async (req, res, next) => {
   await user.save({ validateBeforeSave: false });
 
   // Send tokens
-  createAndSendTokens(user, 200, res, 'Login successful');
+  return createAndSendTokens(user, 200, res, 'Login successful');
 });
 
 // ════════════════════════════════════════════════
@@ -245,7 +261,7 @@ exports.googleAuth = catchAsync(async (req, res, next) => {
   await user.save({ validateBeforeSave: false });
 
   // Send tokens
-  createAndSendTokens(user, 200, res, 'Google authentication successful');
+  return createAndSendTokens(user, 200, res, 'Google authentication successful');
 });
 
 // ════════════════════════════════════════════════
@@ -517,10 +533,12 @@ exports.changePassword = catchAsync(async (req, res, next) => {
 // GET CURRENT USER
 // ════════════════════════════════════════════════
 exports.getMe = catchAsync(async (req, res, next) => {
+  const safeUser = await toSafeUserWithLiveThoughtCount(req.user);
+
   res.status(200).json({
     status: 'success',
     data: {
-      user: req.user.toSafeObject()
+      user: safeUser
     }
   });
 });

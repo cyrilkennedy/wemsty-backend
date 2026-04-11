@@ -9,6 +9,7 @@ const Circle = require('../models/Circle.model');
 const CircleMembership = require('../models/CircleMembership.model');
 const redisManager = require('../config/redis');
 const { kafkaManager } = require('../config/kafka');
+const { sanitizeExternalUrl } = require('../utils/url-sanitizer');
 
 class FeedService {
   constructor() {
@@ -418,10 +419,54 @@ class FeedService {
         .filter(Boolean)
     )];
 
-    const authors = await User.find({ _id: { $in: authorIds } })
-      .select('username profile.displayName profile.avatar isEmailVerified trustScore')
-      .lean();
-    const authorMap = new Map(authors.map((author) => [author._id.toString(), author]));
+    const [authors, likesAgg, commentsAgg, repostsAgg] = await Promise.all([
+      User.find({ _id: { $in: authorIds } })
+        .select('username profile.displayName profile.avatar isEmailVerified trustScore')
+        .lean(),
+      require('../models/Like.model').aggregate([
+        { $match: { post: { $in: postIds } } },
+        { $group: { _id: '$post', users: { $addToSet: '$user' } } },
+        { $project: { count: { $size: '$users' } } }
+      ]),
+      Post.aggregate([
+        {
+          $match: {
+            parentPost: { $in: postIds },
+            postType: 'reply',
+            status: 'active'
+          }
+        },
+        { $group: { _id: '$parentPost', count: { $sum: 1 } } }
+      ]),
+      Post.aggregate([
+        {
+          $match: {
+            originalPost: { $in: postIds },
+            postType: { $in: ['repost', 'quote'] },
+            status: 'active'
+          }
+        },
+        { $group: { _id: { post: '$originalPost', author: '$author' } } },
+        { $group: { _id: '$_id.post', count: { $sum: 1 } } }
+      ])
+    ]);
+    const authorMap = new Map(
+      authors.map((author) => [
+        author._id.toString(),
+        {
+          ...author,
+          profile: author.profile
+            ? {
+              ...author.profile,
+              avatar: sanitizeExternalUrl(author.profile.avatar)
+            }
+            : author.profile
+        }
+      ])
+    );
+    const likesCountMap = new Map(likesAgg.map((item) => [item._id.toString(), Number(item.count || 0)]));
+    const commentsCountMap = new Map(commentsAgg.map((item) => [item._id.toString(), Number(item.count || 0)]));
+    const repostsCountMap = new Map(repostsAgg.map((item) => [item._id.toString(), Number(item.count || 0)]));
 
     let likedIds = new Set();
     let repostedIds = new Set();
@@ -454,6 +499,12 @@ class FeedService {
 
     return posts.map((post) => {
       const postId = post._id.toString();
+      const engagement = {
+        ...(post.engagement || {}),
+        likes: likesCountMap.get(postId) ?? 0,
+        comments: commentsCountMap.get(postId) ?? 0,
+        reposts: repostsCountMap.get(postId) ?? 0
+      };
       return {
         post: {
           id: post._id,
@@ -461,7 +512,10 @@ class FeedService {
           content: post.content,
           postType: post.postType,
           visibility: post.visibility,
-          engagement: post.engagement,
+          engagement,
+          likesCount: engagement.likes,
+          commentsCount: engagement.comments,
+          repostsCount: engagement.reposts,
           createdAt: post.createdAt,
           updatedAt: post.updatedAt,
           sphereScore: post.sphereScore,

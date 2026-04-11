@@ -7,6 +7,8 @@ const {
   normalizeCategorySlug
 } = require('../config/post-categories');
 
+const FEED_VISIBLE_POST_TYPES = ['original', 'quote'];
+
 const PostSchema = new mongoose.Schema({
   // ════════════════════════════════════════════════
   // OWNERSHIP
@@ -356,6 +358,7 @@ PostSchema.statics.getHomeFeed = async function(userId, options = {}) {
   // Build query
   const query = {
     author: { $in: followingIds, $nin: [...blockedIds, ...mutedIds] },
+    postType: { $in: FEED_VISIBLE_POST_TYPES },
     status: 'active',
     $or: [
       { visibility: 'public' },
@@ -403,6 +406,7 @@ PostSchema.statics.getSphereFeed = async function(userId, options = {}) {
 
   const query = {
     author: { $nin: blockedIds },
+    postType: { $in: FEED_VISIBLE_POST_TYPES },
     visibility: 'public',
     sphereEligible: true,
     status: 'active'
@@ -451,6 +455,7 @@ PostSchema.statics.getCategoryFeed = async function(category, userId, options = 
   const query = {
     category: normalizeCategorySlug(category),
     author: { $nin: blockedIds },
+    postType: { $in: FEED_VISIBLE_POST_TYPES },
     visibility: 'public',
     status: 'active'
   };
@@ -482,7 +487,7 @@ PostSchema.statics.getCategoryFeed = async function(category, userId, options = 
 
 // Get user profile posts
 PostSchema.statics.getUserPosts = async function(userId, viewerId, options = {}) {
-  const { page = 1, limit = 20, includeReplies = false } = options;
+  const { page = 1, limit = 20, includeReplies = false, includeReposts = false } = options;
   const safePage = Math.max(1, parseInt(page, 10) || 1);
   const safeLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
   const Block = mongoose.model('Block');
@@ -503,10 +508,16 @@ PostSchema.statics.getUserPosts = async function(userId, viewerId, options = {})
     author: userId,
     status: 'active'
   };
-  
-  if (!includeReplies) {
-    query.postType = { $ne: 'reply' };
+
+  const visiblePostTypes = [...FEED_VISIBLE_POST_TYPES];
+  if (includeReplies) {
+    visiblePostTypes.push('reply');
   }
+  if (includeReposts) {
+    visiblePostTypes.push('repost');
+  }
+
+  query.postType = { $in: visiblePostTypes };
   
   const posts = await this.find(query)
     .populate('author', 'username profile.displayName profile.avatar')

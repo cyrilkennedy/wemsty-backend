@@ -29,6 +29,7 @@
   - [Search](#search)
   - [Payments](#payments)
   - [Moderation](#moderation)
+- [Frontend Engineer Contract (Per API)](#frontend-engineer-contract-per-api)
 - [Realtime (WebSocket)](#realtime-websocket)
 - [Data Models](#data-models)
 - [Additional Notes](#additional-notes)
@@ -274,6 +275,11 @@ Example response:
 }
 ```
 
+#### Frontend Engineer Expectations
+- Call this endpoint on app startup and before running smoke/integration tests.
+- If this fails or reports infrastructure issues, block authenticated flows and show a service status banner.
+- Do not cache this response for long periods in production clients.
+
 ---
 
 ### Authentication Endpoints
@@ -383,6 +389,13 @@ Email verification request:
 }
 ```
 
+#### Frontend Engineer Expectations
+- Persist access/refresh tokens securely and replace them whenever `/auth/refresh` succeeds.
+- Implement a single automatic retry for `401` responses, then hard logout if refresh fails.
+- Treat `/auth/forgot-password` and OTP reset request flows as privacy-preserving: never expose whether an account exists.
+- Reconnect realtime socket after login/logout/token refresh changes.
+- Expect rate limiting (`429`) on auth endpoints and display cooldown messaging.
+
 ---
 
 ### Users
@@ -450,6 +463,12 @@ Status update payload:
 ```
 
 Valid statuses: `active`, `suspended`, `banned`
+
+#### Frontend Engineer Expectations
+- Always send profile edits inside `profile` object; root-level profile fields will be ignored.
+- Use server-returned user object to overwrite local profile state after any successful profile mutation.
+- For admin/moderator views, treat `/users` filters and pagination as server-driven state.
+- For account deletion, clear all local auth/session/cache state immediately after success.
 
 ---
 
@@ -555,6 +574,13 @@ Interaction summary:
 - Repost/quote create: `POST /posts/repost`
 - Explicit unrepost: `DELETE /posts/repost/:postId`
 
+#### Frontend Engineer Expectations
+- Never compute like/repost/bookmark counters locally; always trust backend counters in responses/events.
+- Treat interaction endpoints as idempotent and update UI from response booleans (`liked`, `bookmarked`, `reposted`).
+- For profile thought timeline, default to `GET /posts/user/:username` without `includeReposts=true`.
+- Use `text` in `/posts/repost` only when creating/updating a quote repost UI flow.
+- Comments are unlimited per account; comment count source of truth is post payload `commentsCount`.
+
 ---
 
 ### Social
@@ -579,6 +605,12 @@ Interaction summary:
 | GET | `/social/muted` | Private | List muted users |
 
 Pagination applies to follower/following lists.
+
+#### Frontend Engineer Expectations
+- Drive follow button state from `/social/follow/status/:userId` or mutation response status.
+- Handle private-account follow behavior (`PENDING`) in UI distinctly from accepted follow.
+- Refresh follower/following counts after follow/unfollow/accept/reject actions.
+- Remove blocked/muted users from relevant feeds and visible lists immediately.
 
 ---
 
@@ -624,6 +656,12 @@ Redeem invite payload:
 }
 ```
 
+#### Frontend Engineer Expectations
+- Use circle `membership` and resolved `permissions` from backend to gate admin/moderator UI actions.
+- Always refresh channel/member lists after role/assign/invite/join/leave mutations.
+- For pin endpoints, send `{ "pinned": false }` to unpin; default behavior pins when omitted.
+- On join/leave/redeem actions, update local membership state and counts from server responses.
+
 ---
 
 ### Messages
@@ -661,6 +699,12 @@ Read state update payload:
 }
 ```
 
+#### Frontend Engineer Expectations
+- Use server pagination for messages; avoid assuming full history is returned in one call.
+- Reconcile optimistic messages with server-returned message objects after send endpoints.
+- Keep read-state source of truth on backend (`/messages/reads`) and patch UI from returned read state.
+- Enforce access errors (`403/404`) by routing users out of unauthorized channel/conversation screens.
+
 ---
 
 ### Notifications
@@ -686,6 +730,11 @@ Unread count response:
   }
 }
 ```
+
+#### Frontend Engineer Expectations
+- Use `/notifications/unread-count` for header badge sync and refresh after mark-read actions.
+- After `PATCH /notifications/read-all`, set all local items read without waiting for next poll cycle.
+- Merge notification list pagination from backend instead of client-calculated cursors.
 
 ---
 
@@ -718,6 +767,12 @@ Update preferences payload:
 }
 ```
 
+#### Frontend Engineer Expectations
+- Send only boolean values for known keys under `email`, `push`, and `sms`.
+- Rehydrate preference form from server response after each update/reset/enable-all/disable-all action.
+- Use `/notifications/preferences/summary` for compact settings cards instead of computing counts client-side.
+- Optional test endpoint supports `?type=<channel>` query and should show immediate success/failure toast.
+
 ---
 
 ### Feed
@@ -731,6 +786,12 @@ Update preferences payload:
 | GET | `/feed/ranking/:postId` | Private | Ranking debug data |
 
 Feed queries commonly use `page` and `limit`.
+
+#### Frontend Engineer Expectations
+- Treat returned `items`, `feed`, and `posts` aliases as equivalent feed arrays.
+- For pull-to-refresh/manual refresh UX, call `POST /feed/home/refresh` then refetch first page.
+- Respect `mode` and cache flags from UI controls when calling sphere/discovery endpoints.
+- Gracefully handle feed throttling (`429`) with retry delay from `retryAfter`.
 
 ---
 
@@ -768,6 +829,11 @@ Example hashtag response:
 }
 ```
 
+#### Frontend Engineer Expectations
+- Use query params (`limit`, `category`, `timeWindow`, etc.) as explicit UI filter state.
+- Keep public vs private trending endpoint behavior consistent with auth state.
+- For topic/hashtag detail routes, treat `404` as normal empty state (invalid or expired trend).
+
 ---
 
 ### Search
@@ -780,6 +846,11 @@ Query parameters:
 - `q` (required)
 - `type`: `all`, `posts`, `users`, `hashtags`
 - `page`, `limit`
+
+#### Frontend Engineer Expectations
+- Always debounce search input and avoid calling endpoint when `q` is empty.
+- Render grouped sections directly from backend arrays (`users`, `posts`, `circles`, `categories`).
+- Do not assume every type is returned; handle empty arrays independently per section.
 
 ---
 
@@ -803,6 +874,12 @@ Initialize payment payload:
 ```
 
 `amount` is in kobo. Example: `1000` equals `NGN 10.00`.
+
+#### Frontend Engineer Expectations
+- Convert user-facing currency amount to kobo before calling `/payments/initialize`.
+- Never call webhook endpoint from frontend; it is strictly provider-to-backend.
+- Verify transaction status with `/payments/verify/:reference` before finalizing paid UX states.
+- Keep payment history UI resilient to empty transaction arrays.
 
 ---
 
@@ -844,6 +921,225 @@ Action payload:
 ```
 
 Valid actions: `dismiss`, `warn`, `suspend`, `ban`, `delete`
+
+#### Frontend Engineer Expectations
+- Use moderation endpoints only for authorized admin/moderator surfaces.
+- Report creation must send required fields (`targetType`, `targetId`, `reasonCode`) and prevent duplicate submissions in UI.
+- Drive moderation queue state from server `status` + pagination, not local assumptions.
+- Show clear audit trail context using `/moderation/audit-logs` filters.
+
+---
+
+## Frontend Engineer Contract (Per API)
+
+This section is the strict frontend contract for every mounted API route.
+
+### Global Expectations (All Endpoints)
+
+1. Send `Authorization: Bearer <accessToken>` for every `Private` endpoint.
+2. On `401`, call `POST /auth/refresh` once, then retry the failed request once.
+3. Treat interaction endpoints (`like`, `bookmark`, `repost`) as idempotent and always trust server booleans/counters from response.
+4. Always handle both success styles in this codebase: `status: "success"` and `success: true`.
+5. For paginated endpoints, persist `page`, `limit`, and `hasMore` in UI state.
+6. On `429`, wait `retryAfter` seconds before retrying.
+7. For optional-auth endpoints, include token when available so viewer state (`liked`, `bookmarked`, `reposted`) is returned.
+
+### Health Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /health` | No auth. | Use for startup health check and show maintenance/offline banner if not healthy. |
+
+### Authentication Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /auth/test` | No auth. Dev only. | Use only in local/dev diagnostics, not product UI. |
+| `POST /auth/signup` | JSON: `email`, `username`, `password` (8+ chars). | Save `accessToken`/`refreshToken`, hydrate auth store, route user into onboarding. |
+| `POST /auth/login` | JSON: `email`, `password`. | Save returned tokens and user object; connect realtime socket with new token. |
+| `POST /auth/google` | JSON: `idToken` from Google SDK. | Same handling as normal login. |
+| `POST /auth/refresh` | Refresh token in body (`refreshToken`) or cookie. | Replace access token, replay one pending 401 request, logout if refresh fails. |
+| `POST /auth/forgot-password` | JSON with email. | Show generic success message regardless of account existence. |
+| `POST /auth/reset-password` | JSON: `token`, `newPassword`. | Route to login and clear stale auth state. |
+| `POST /auth/password-reset/request` | JSON: `email`. | Start OTP stepper UI and countdown timer. |
+| `POST /auth/password-reset/verify-otp` | JSON: `email`, `otp`. | Store returned reset token (if present) in memory only and move to reset step. |
+| `POST /auth/password-reset/reset` | JSON: `token`, `newPassword`. | Force new login flow after success. |
+| `POST /auth/password-reset/feedback` | JSON feedback payload from UI form. | Fire-and-forget UX; do not block auth flow on this endpoint. |
+| `POST /auth/password-reset/resend-otp` | JSON: `email`. | Restart OTP timer and keep user in same step. |
+| `POST /auth/verify-email` | JSON: `token` from verification link. | Mark user as verified in state and remove verification banner. |
+| `GET /auth/me` | Bearer token. | Use as source of truth for session restoration on app boot. |
+| `POST /auth/logout` | Bearer token. | Clear local tokens/user cache and disconnect realtime socket. |
+| `POST /auth/logout-all` | Bearer token. | Clear local tokens and prompt re-login on all client tabs/devices. |
+| `POST /auth/change-password` | Bearer token + JSON: `currentPassword`, `newPassword`. | Show success and optionally require token refresh/re-auth for sensitive screens. |
+| `POST /auth/resend-verification` | Bearer token. | Show cooldown UI and "email sent" status. |
+
+### Users Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /users/handle/:username` | Optional bearer token. | Render public profile header and counters from server response. |
+| `GET /users/profile` | Bearer token. | Hydrate editable profile form from full user object. |
+| `PATCH /users/profile` | Bearer token + JSON; profile fields must be nested under `profile`. | Replace local user state with returned user object. |
+| `DELETE /users/account` | Bearer token + `confirmDelete: "DELETE"` and `password` (for password users). | Hard logout client and route to account-deleted screen. |
+| `GET /users` | Bearer token (admin/moderator) + optional `page`, `limit`, `search`, `status`, `role`. | Drive admin user table with pagination/filter chips. |
+| `PATCH /users/:id/role` | Bearer token (admin) + JSON: `role`. | Update row immediately in admin table from response. |
+| `PATCH /users/:id/status` | Bearer token (admin/moderator) + JSON: `status`, optional `reason`. | Update moderation/admin UI badge and action history. |
+
+### Posts Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /posts/trending` | Optional bearer token + optional `page`, `limit`, `timeframe`, `category`. | Populate trending feed and trust server counts/flags. |
+| `GET /posts/categories` | No auth. | Use as source for category tabs/selectors. |
+| `GET /posts/sphere` | Optional bearer token + optional `page`, `limit`, `mode`. | Render discovery feed; mode should match active tab (`top`/`latest`). |
+| `GET /posts/category/:categorySlug` | Optional bearer token + optional `page`, `limit`, `mode`. | Render category feed and category metadata from server. |
+| `GET /posts/search` | Optional bearer token + required `q`; optional `page`, `limit`, `category`. | Debounce query in UI and show empty/error states for missing/invalid search. |
+| `GET /posts/:postId` | Optional bearer token. | Use as canonical post detail payload (includes viewer booleans when authed). |
+| `GET /posts/:postId/thread` | Optional bearer token. | Build thread view from `post` + `replies`; do not compute counts client-side. |
+| `GET /posts/user/:username` | Optional bearer token + optional `page`, `limit`, `includeReplies`, `includeReposts`. | Default profile "Thoughts" tab should keep `includeReposts=false` unless a repost tab exists. |
+| `GET /posts/feed/home` | Bearer token + optional `page`, `limit`. | Render following feed and persist pagination cursor/state. |
+| `GET /posts/feed/sphere` | Bearer token + optional `page`, `limit`, `mode`. | Render authenticated discovery feed and reuse same card contracts as public feed. |
+| `POST /posts` | Bearer token + JSON with `text` or `media`; optional `category`, `visibility`, `sphereEligible`. | Insert returned post from server response; never fabricate ids/counters locally. |
+| `POST /posts/repost` | Bearer token + JSON: `postId`; optional `text` for quote only. | For plain repost, do not create custom local post card; use returned `reposted` flags/counters. |
+| `DELETE /posts/repost/:postId` | Bearer token. | Set `reposted=false` and replace counter from returned `repostsCount`. |
+| `POST /posts/reply` | Bearer token + JSON: `postId`, `text`. | Add reply using returned reply payload and update parent comments count from response. |
+| `PATCH /posts/reply/:replyId` | Bearer token + JSON: `text`. | Replace edited comment content from response object. |
+| `DELETE /posts/reply/:replyId` | Bearer token. | Remove comment from UI and refresh or patch parent comment count. |
+| `POST /posts/reply/:replyId/like` | Bearer token + optional `source`. | Update like state from response (`liked`, `likesCount`) only. |
+| `DELETE /posts/reply/:replyId/like` | Bearer token. | Update comment like state/counter from response only. |
+| `POST /posts/:postId/like` | Bearer token + optional `source`. | Update post like state from server response (idempotent). |
+| `DELETE /posts/:postId/like` | Bearer token. | Update post like state from server response (idempotent). |
+| `GET /posts/:postId/likes` | Bearer token + optional `page`, `limit`. | Render likes modal/list with pagination. |
+| `POST /posts/:postId/bookmark` | Bearer token + optional `collection`. | Toggle bookmark UI using `bookmarked` field from response. |
+| `DELETE /posts/:postId/bookmark` | Bearer token. | Toggle bookmark UI using response fields only. |
+| `GET /posts/bookmarks/me` | Bearer token + optional `page`, `limit`, `collection`. | Render saved posts screen from returned bookmark list. |
+| `DELETE /posts/:postId` | Bearer token. | Remove post from visible feeds/profile and re-request current page if needed. |
+
+### Social Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `POST /social/follow/:userId` | Bearer token. | Set follow button by returned status (`ACCEPTED` or `PENDING`). |
+| `DELETE /social/follow/:userId` | Bearer token. | Set follow button to unfollowed and refresh follower counters. |
+| `GET /social/follow/status/:userId` | Bearer token. | Use for profile button state sync on mount/refresh. |
+| `GET /social/follow-requests` | Bearer token + optional `page`, `limit`. | Render incoming requests queue with pagination. |
+| `POST /social/follow-requests/:requestId/accept` | Bearer token. | Remove request from queue and update follower counts/badges. |
+| `POST /social/follow-requests/:requestId/reject` | Bearer token. | Remove request from queue without follow state change. |
+| `GET /social/followers/:userId` | Bearer token + optional `page`, `limit`. | Render followers tab with pagination and total count. |
+| `GET /social/following/:userId` | Bearer token + optional `page`, `limit`. | Render following tab with pagination and total count. |
+| `GET /social/mutual/:userId` | Bearer token. | Show mutual connections list/chips in profile context. |
+| `GET /social/suggestions` | Bearer token + optional `limit`. | Render suggestion cards and consume lazily. |
+| `POST /social/block/:userId` | Bearer token. | Immediately hide blocked user's content and invalidate active chat/thread views. |
+| `DELETE /social/block/:userId` | Bearer token. | Allow profile/content to appear again after unblock. |
+| `GET /social/blocked` | Bearer token + optional `page`, `limit`. | Render blocked users management list. |
+| `POST /social/mute/:userId` | Bearer token. | Hide muted user's content from feeds according to UI rules. |
+| `DELETE /social/mute/:userId` | Bearer token. | Restore muted user's content in feed composition. |
+| `GET /social/muted` | Bearer token + optional `page`, `limit`. | Render muted users management list. |
+
+### Circles Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /circles` | Optional `q`, `page`, `limit`. | Render discover circles list with pagination. |
+| `GET /circles/view/:identifier` | Optional bearer token. | Render circle details; respect membership/permission fields in response. |
+| `GET /circles/me/memberships` | Bearer token. | Build "My Circles" dashboard from returned memberships. |
+| `POST /circles` | Bearer token + JSON: `name` required; optional `slug`, `description`, `visibility`, `tags`, `icon`, `banner`. | Route user to newly created circle page from returned circle object. |
+| `POST /circles/invites/:code/redeem` | Bearer token; invite code in path. | Join user to circle and refresh memberships + circle header stats. |
+| `GET /circles/:circleId/members` | Bearer token. | Render members directory from returned member objects. |
+| `GET /circles/:circleId/channels` | Bearer token. | Render channel list in returned order. |
+| `GET /circles/:circleId/roles` | Bearer token. | Populate role management UI. |
+| `POST /circles/:circleId/roles` | Bearer token + JSON: `name`, optional `permissions`, `priority`. | Insert new role into role table from response. |
+| `POST /circles/:circleId/roles/assign` | Bearer token + JSON: `memberId`, `roleId`, optional `assign` boolean. | Update member role badges from returned membership. |
+| `GET /circles/:circleId/invites` | Bearer token. | Render invite admin list with status/usage. |
+| `POST /circles/:circleId/invites` | Bearer token + optional `expiresAt`, `maxUses`. | Show generated invite code and copy/share controls. |
+| `POST /circles/:circleId/join` | Bearer token. | Update join button and circle member count instantly from response. |
+| `POST /circles/:circleId/leave` | Bearer token. | Remove circle from "My Circles" and route away if user is in that circle view. |
+| `POST /circles/:circleId/channels` | Bearer token + JSON: `name` required; optional `kind`, `topic`, `visibility`. | Add created channel to channel list. |
+| `POST /circles/:circleId/channels/:channelId/pin` | Bearer token + optional JSON: `pinned` (default true). | Reflect pinned state in channel ordering and pin icon. |
+| `POST /circles/:circleId/posts/:postId/pin` | Bearer token + optional JSON: `pinned` (default true). | Reflect pinned posts widget from returned `pinnedPostIds`. |
+
+### Messages Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /messages/channels/:circleId/:channelId` | Bearer token + optional `page`, `limit`. | Render channel thread; paginate older messages upward. |
+| `POST /messages/channels/:circleId/:channelId` | Bearer token + JSON: `bodyText`; optional `replyToMessageId`. | Append returned message and reconcile optimistic placeholder by id/timestamp. |
+| `GET /messages/reads` | Bearer token. | Hydrate unread badges/read receipts state. |
+| `POST /messages/reads` | Bearer token + JSON: `scopeType`, `scopeId`, optional `lastReadMessageId`. | Update read indicators and unread counters. |
+| `GET /messages/dm/conversations` | Bearer token. | Render DM inbox list sorted by server order. |
+| `POST /messages/dm/conversations/:userId` | Bearer token. | Open or create DM thread and route to conversation UI. |
+| `GET /messages/dm/conversations/:conversationId/messages` | Bearer token + optional `page`, `limit`. | Render DM messages with pagination; use server as source of truth. |
+| `POST /messages/dm/conversations/:conversationId/messages` | Bearer token + JSON: `bodyText`. | Append returned DM message and sync optimistic state. |
+
+### Notifications Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /notifications` | Bearer token + optional `page`, `limit`. | Render notifications list and unread badge using returned `unreadCount`. |
+| `GET /notifications/unread-count` | Bearer token. | Poll or refresh badge count in header/nav. |
+| `PATCH /notifications/read-all` | Bearer token. | Mark all local notifications as read and set unread badge to zero. |
+| `PATCH /notifications/:notificationId/read` | Bearer token. | Mark only that notification as read in local list. |
+
+### Notification Preferences Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /notifications/preferences` | Bearer token. | Hydrate preferences form toggles from response. |
+| `PUT /notifications/preferences` | Bearer token + nested boolean matrix (`email`, `push`, `sms` actions). | Persist toggles and display save confirmation. |
+| `GET /notifications/preferences/defaults` | Bearer token. | Use to power "Reset to default preview" UI. |
+| `POST /notifications/preferences/reset` | Bearer token. | Replace form state with returned defaults. |
+| `POST /notifications/preferences/enable-all` | Bearer token. | Set all toggles to on in UI using response payload. |
+| `POST /notifications/preferences/disable-all` | Bearer token. | Set all toggles to off in UI using response payload. |
+| `GET /notifications/preferences/summary` | Bearer token. | Render compact settings summary (enabled counts per channel). |
+| `POST /notifications/preferences/test` | Bearer token + optional query `type`. | Show immediate toast/status that test notification was sent. |
+
+### Feed Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /feed/home` | Bearer token + optional `page`, `limit`, `useCache`. | Render following feed from `items`/`feed`/`posts`; respect pagination from response. |
+| `POST /feed/home/refresh` | Bearer token. | Invalidate local feed cache and re-fetch first page after success. |
+| `GET /feed/sphere` | Bearer token + optional `page`, `limit`, `mode`, `useCache`. | Render discovery feed and mode switcher (`top`/`latest`) using server results. |
+| `GET /feed/sphere/category/:category` | Bearer token + optional `page`, `limit`, `mode`. | Render category-filtered discovery feed. |
+| `GET /feed/ranking/:postId` | Bearer token. | Use only for internal debug tooling, not regular end-user surfaces. |
+
+### Trending Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /trending/hashtags` | Optional auth + optional `limit`, `category`, `timeWindow`. | Render hashtag trends and trend deltas from response list. |
+| `GET /trending/topics` | Optional auth + optional `limit`, `category`, `status`, `timeWindow`. | Render topic trends and filters from query params. |
+| `GET /trending/categories` | No auth. | Use to build trend category tabs/selectors. |
+| `GET /trending/stats` | No auth. | Show analytics counters in admin/insight widgets. |
+| `GET /trending/category/:category` | Bearer token + optional `limit`, `status`. | Render category-specific trending cards. |
+| `GET /trending/hashtag/:tag` | Bearer token. | Render hashtag detail page and related tags. |
+| `GET /trending/topic/:topic/:type?` | Bearer token. | Render topic details; default `type` is backend-defined fallback. |
+| `GET /trending/region/:region` | Bearer token + optional `limit`. | Render regional trend widgets/maps. |
+| `GET /trending/search` | Bearer token + required `q`; optional `limit`. | Debounce search and show empty state when `q` is missing. |
+
+### Search Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `GET /search` | Required `q`; optional `type` (`all`, `users`, `posts`, `circles`, `categories`), optional `limit`. | Use returned grouped arrays (`users`, `posts`, `circles`, `categories`) and avoid client-side regrouping logic. |
+
+### Payments Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `POST /payments/webhook` | Backend-to-backend only (Paystack signature). | Frontend must never call this endpoint directly. |
+| `POST /payments/initialize` | Bearer token + JSON: `amount` required, optional `metadata`. | Redirect user to payment authorization URL returned by backend/paystack payload. |
+| `GET /payments/verify/:reference` | Bearer token + reference path param. | Confirm transaction state and update subscription/purchase UI accordingly. |
+| `GET /payments/history` | Bearer token. | Render payment history list (currently may be empty placeholder). |
+
+### Moderation Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `POST /moderation/reports` | Bearer token + JSON: `targetType`, `targetId`, `reasonCode`; optional `detailsText`. | Show report submitted confirmation and disable duplicate report action for same target. |
+| `GET /moderation/reports` | Bearer token (admin/moderator) + optional `status`, `page`, `limit`. | Render moderation queue with pagination and status filters. |
+| `POST /moderation/reports/:reportId/actions` | Bearer token (admin/moderator) + JSON: `actionType`, optional `reasonText`. | Update moderation queue row status and surface applied action details. |
+| `GET /moderation/audit-logs` | Bearer token (admin/moderator) + optional `objectType`, `actionType`, `page`, `limit`. | Render audit timeline and preserve server ordering. |
 
 ---
 
@@ -949,9 +1245,9 @@ const socket = io('http://localhost:3001/realtime', {
 | `presence.updated` | `{ userId, status, at }` | Presence state changed |
 | `channel.typing.updated` | `{ channelId, userIds }` | Channel typing users updated |
 | `post.created` | `{ post }` | New post published |
-| `post:liked` | `{ postId, likesCount, userId, liked, isLiked }` | Backward-compatible like update event |
+| `post:liked` | `{ postId, likesCount, userId, liked, isLiked }` | Legacy like update event (emitted only if `ENABLE_SOCKET_LEGACY_EVENTS=true`) |
 | `post.liked.updated` | `{ postId, likesCount, userId, liked, isLiked }` | Primary like update event |
-| `post:reposted` | `{ postId, repostsCount, userId, reposted }` | Backward-compatible repost update event |
+| `post:reposted` | `{ postId, repostsCount, userId, reposted }` | Legacy repost update event (emitted only if `ENABLE_SOCKET_LEGACY_EVENTS=true`) |
 | `post.reposted.updated` | `{ postId, repostsCount, userId, reposted }` | Primary repost update event |
 
 Realtime handling tip:
