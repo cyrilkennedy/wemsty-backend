@@ -44,7 +44,7 @@ async function syncPostCounters(postId, counters = {}) {
   const nextCounterValues = {};
 
   if (counters.likes) {
-    nextCounterValues['engagement.likes'] = await Like.countDocuments({ post: postId });
+    nextCounterValues['engagement.likes'] = await Like.distinct('user', { post: postId }).then((users) => users.length);
   }
 
   if (counters.comments) {
@@ -56,11 +56,11 @@ async function syncPostCounters(postId, counters = {}) {
   }
 
   if (counters.reposts) {
-    nextCounterValues['engagement.reposts'] = await Post.countDocuments({
+    nextCounterValues['engagement.reposts'] = await Post.distinct('author', {
       originalPost: postId,
       postType: { $in: REPOST_TYPES },
       status: 'active'
-    });
+    }).then((users) => users.length);
   }
 
   const hasUpdates = Object.keys(nextCounterValues).length > 0;
@@ -80,6 +80,72 @@ async function syncPostCounters(postId, counters = {}) {
   await updatedPost.save({ validateBeforeSave: false });
 
   return updatedPost;
+}
+
+async function getCanonicalActiveRepost(userId, postId) {
+  const reposts = await Post.find({
+    author: userId,
+    originalPost: postId,
+    postType: { $in: REPOST_TYPES },
+    status: 'active'
+  }).sort({ createdAt: -1, _id: -1 });
+
+  if (reposts.length === 0) {
+    return null;
+  }
+
+  const [canonicalRepost, ...duplicates] = reposts;
+
+  if (duplicates.length > 0) {
+    await Post.updateMany(
+      { _id: { $in: duplicates.map((repost) => repost._id) } },
+      { $set: { status: 'deleted' } }
+    );
+  }
+
+  return canonicalRepost;
+}
+
+async function getCanonicalLike(userId, postId) {
+  const likes = await Like.find({
+    user: userId,
+    post: postId
+  })
+    .sort({ createdAt: -1, _id: -1 })
+    .select('_id');
+
+  if (likes.length === 0) {
+    return null;
+  }
+
+  const [canonicalLike, ...duplicates] = likes;
+
+  if (duplicates.length > 0) {
+    await Like.deleteMany({ _id: { $in: duplicates.map((like) => like._id) } });
+  }
+
+  return canonicalLike;
+}
+
+async function getCanonicalBookmark(userId, postId) {
+  const bookmarks = await Bookmark.find({
+    user: userId,
+    post: postId
+  })
+    .sort({ createdAt: -1, _id: -1 })
+    .select('_id');
+
+  if (bookmarks.length === 0) {
+    return null;
+  }
+
+  const [canonicalBookmark, ...duplicates] = bookmarks;
+
+  if (duplicates.length > 0) {
+    await Bookmark.deleteMany({ _id: { $in: duplicates.map((bookmark) => bookmark._id) } });
+  }
+
+  return canonicalBookmark;
 }
 
 async function attachViewerStateToPosts(posts, userId) {
@@ -230,12 +296,7 @@ exports.createRepost = catchAsync(async (req, res, next) => {
   }
 
   // Check if already reposted
-  const existingRepost = await Post.findOne({
-    author: userId,
-    originalPost: postId,
-    postType: { $in: REPOST_TYPES },
-    status: 'active'
-  });
+  const existingRepost = await getCanonicalActiveRepost(userId, postId);
 
   if (existingRepost) {
     if (quoteText) {
@@ -308,18 +369,17 @@ exports.createRepost = catchAsync(async (req, res, next) => {
     });
   } catch (error) {
     if (error?.code === 11000) {
-      const safeExistingRepost = await Post.findOne({
-        author: userId,
-        originalPost: postId,
-        postType: { $in: REPOST_TYPES },
-        status: 'active'
-      }).populate([
+      const safeExistingRepost = await getCanonicalActiveRepost(userId, postId);
+
+      if (safeExistingRepost) {
+        await safeExistingRepost.populate([
         { path: 'author', select: 'username profile.displayName profile.avatar' },
         {
           path: 'originalPost',
           populate: { path: 'author', select: 'username profile.displayName profile.avatar' }
         }
-      ]);
+        ]);
+      }
       const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
       realtimeEvents.emit('post.reposted', {
         postId,
@@ -342,6 +402,10 @@ exports.createRepost = catchAsync(async (req, res, next) => {
     throw error;
   }
 
+  const canonicalRepost = await getCanonicalActiveRepost(userId, postId);
+  if (canonicalRepost) {
+    repost = canonicalRepost;
+  }
   const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
 
   // Populate details
@@ -818,7 +882,7 @@ exports.toggleLike = catchAsync(async (req, res, next) => {
   }
 
   let createdLike = false;
-  const existingLike = await Like.findOne({ user: userId, post: postId }).select('_id');
+  const existingLike = await getCanonicalLike(userId, postId);
 
   if (!existingLike) {
     try {
@@ -828,6 +892,7 @@ exports.toggleLike = catchAsync(async (req, res, next) => {
       if (error?.code !== 11000) {
         throw error;
       }
+      await getCanonicalLike(userId, postId);
     }
   }
 
@@ -874,7 +939,7 @@ exports.unlikePost = catchAsync(async (req, res, next) => {
     return next(new AppError('Post not found', 404));
   }
 
-  const deleteResult = await Like.deleteOne({ user: userId, post: postId });
+  const deleteResult = await Like.deleteMany({ user: userId, post: postId });
   const removed = Number(deleteResult?.deletedCount || 0) > 0;
   const updatedPost = await syncPostCounters(postId, { likes: true });
   const likesCount = updatedPost?.engagement?.likes || 0;
@@ -916,7 +981,7 @@ exports.likeReply = catchAsync(async (req, res, next) => {
   }
 
   let createdLike = false;
-  const existingLike = await Like.findOne({ user: userId, post: replyId }).select('_id');
+  const existingLike = await getCanonicalLike(userId, replyId);
 
   if (!existingLike) {
     try {
@@ -926,6 +991,7 @@ exports.likeReply = catchAsync(async (req, res, next) => {
       if (error?.code !== 11000) {
         throw error;
       }
+      await getCanonicalLike(userId, replyId);
     }
   }
 
@@ -973,7 +1039,7 @@ exports.unlikeReply = catchAsync(async (req, res, next) => {
     return next(new AppError('Comment not found', 404));
   }
 
-  const deleteResult = await Like.deleteOne({ user: userId, post: replyId });
+  const deleteResult = await Like.deleteMany({ user: userId, post: replyId });
   const removed = Number(deleteResult?.deletedCount || 0) > 0;
   const updatedReply = await syncPostCounters(replyId, { likes: true });
   const likesCount = updatedReply?.engagement?.likes || 0;
@@ -1032,7 +1098,7 @@ exports.toggleBookmark = catchAsync(async (req, res, next) => {
     return next(new AppError('Post not found', 404));
   }
 
-  const existingBookmark = await Bookmark.findOne({ user: userId, post: postId }).select('_id');
+  const existingBookmark = await getCanonicalBookmark(userId, postId);
   let createdBookmark = false;
 
   if (!existingBookmark) {
@@ -1047,6 +1113,7 @@ exports.toggleBookmark = catchAsync(async (req, res, next) => {
       if (error?.code !== 11000) {
         throw error;
       }
+      await getCanonicalBookmark(userId, postId);
     }
   }
 
@@ -1071,7 +1138,7 @@ exports.unbookmarkPost = catchAsync(async (req, res, next) => {
     return next(new AppError('Post not found', 404));
   }
 
-  const deleteResult = await Bookmark.deleteOne({ user: userId, post: postId });
+  const deleteResult = await Bookmark.deleteMany({ user: userId, post: postId });
   const removed = Number(deleteResult?.deletedCount || 0) > 0;
 
   res.status(200).json({
@@ -1095,14 +1162,16 @@ exports.removeRepost = catchAsync(async (req, res, next) => {
     return next(new AppError('Post not found', 404));
   }
 
-  const repost = await Post.findOne({
+  const reposts = await Post.find({
     author: userId,
     originalPost: postId,
     postType: { $in: REPOST_TYPES },
     status: 'active'
-  });
+  }).select('_id');
 
-  if (!repost) {
+  const repostIds = reposts.map((item) => item._id);
+
+  if (repostIds.length === 0) {
     const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
     realtimeEvents.emit('post.reposted', {
       postId,
@@ -1124,8 +1193,10 @@ exports.removeRepost = catchAsync(async (req, res, next) => {
     });
   }
 
-  repost.status = 'deleted';
-  await repost.save({ validateBeforeSave: false });
+  await Post.updateMany(
+    { _id: { $in: repostIds } },
+    { $set: { status: 'deleted' } }
+  );
   const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
 
   realtimeEvents.emit('post.reposted', {
