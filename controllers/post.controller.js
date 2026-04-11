@@ -28,16 +28,35 @@ async function attachViewerStateToPosts(posts, userId) {
   }
 
   const postIds = posts.map((post) => post._id);
-  const userLikes = await Like.find({
-    user: userId,
-    post: { $in: postIds }
-  }).select('post');
+  const [userLikes, userBookmarks, userReposts] = await Promise.all([
+    Like.find({
+      user: userId,
+      post: { $in: postIds }
+    }).select('post'),
+    Bookmark.find({
+      user: userId,
+      post: { $in: postIds }
+    }).select('post'),
+    Post.find({
+      author: userId,
+      originalPost: { $in: postIds },
+      postType: { $in: ['repost', 'quote'] },
+      status: 'active'
+    }).select('originalPost')
+  ]);
 
   const likedPostIds = new Set(userLikes.map((like) => like.post.toString()));
+  const bookmarkedPostIds = new Set(userBookmarks.map((bookmark) => bookmark.post.toString()));
+  const repostedPostIds = new Set(userReposts.map((repost) => repost.originalPost.toString()));
 
   return posts.map((post) => ({
     ...post.toObject(),
-    isLiked: likedPostIds.has(post._id.toString())
+    isLiked: likedPostIds.has(post._id.toString()),
+    liked: likedPostIds.has(post._id.toString()),
+    isBookmarked: bookmarkedPostIds.has(post._id.toString()),
+    bookmarked: bookmarkedPostIds.has(post._id.toString()),
+    isReposted: repostedPostIds.has(post._id.toString()),
+    reposted: repostedPostIds.has(post._id.toString())
   }));
 }
 
@@ -180,7 +199,9 @@ exports.createRepost = catchAsync(async (req, res, next) => {
         message: 'Repost updated successfully',
         data: {
           post: existingRepost,
-          reposted: true
+          reposted: true,
+          isReposted: true,
+          repostsCount: originalPost.engagement?.reposts ?? 0
         }
       });
     }
@@ -191,13 +212,23 @@ exports.createRepost = catchAsync(async (req, res, next) => {
     await Post.findByIdAndUpdate(postId, {
       $inc: { 'engagement.reposts': -1 }
     });
+    const updatedOriginalPost = await Post.findById(postId).select('engagement.reposts');
+
+    realtimeEvents.emit('post.reposted', {
+      postId,
+      repostsCount: updatedOriginalPost?.engagement?.reposts || 0,
+      userId,
+      reposted: false
+    });
 
     return res.status(200).json({
       success: true,
       message: 'Repost removed successfully',
       data: {
         reposted: false,
-        postId
+        isReposted: false,
+        postId,
+        repostsCount: updatedOriginalPost?.engagement?.reposts || 0
       }
     });
   }
@@ -219,6 +250,7 @@ exports.createRepost = catchAsync(async (req, res, next) => {
   await Post.findByIdAndUpdate(postId, {
     $inc: { 'engagement.reposts': 1 }
   });
+  const updatedOriginalPost = await Post.findById(postId).select('engagement.reposts');
 
   // Populate details
   await repost.populate([
@@ -253,8 +285,17 @@ exports.createRepost = catchAsync(async (req, res, next) => {
     message: quoteText ? 'Quote reposted successfully' : 'Reposted successfully',
     data: {
       post: repost,
-      reposted: true
+      reposted: true,
+      isReposted: true,
+      repostsCount: updatedOriginalPost?.engagement?.reposts || 0
     }
+  });
+
+  realtimeEvents.emit('post.reposted', {
+    postId,
+    repostsCount: updatedOriginalPost?.engagement?.reposts || 0,
+    userId,
+    reposted: true
   });
 });
 
@@ -518,8 +559,17 @@ exports.getPost = catchAsync(async (req, res, next) => {
     }
 
     // Check if liked by current user
-    const isLiked = await Like.isLikedByUser(userId, postId);
-    const isBookmarked = await Bookmark.exists({ user: userId, post: postId });
+    const [isLiked, isBookmarked, repostDoc] = await Promise.all([
+      Like.isLikedByUser(userId, postId),
+      Bookmark.exists({ user: userId, post: postId }),
+      Post.findOne({
+        author: userId,
+        originalPost: postId,
+        postType: { $in: ['repost', 'quote'] },
+        status: 'active'
+      }).select('_id')
+    ]);
+    const isReposted = !!repostDoc;
 
     // Increment views
     await post.incrementViews();
@@ -530,7 +580,11 @@ exports.getPost = catchAsync(async (req, res, next) => {
         post: {
           ...post.toObject(),
           isLiked,
-          isBookmarked
+          liked: !!isLiked,
+          isBookmarked: !!isBookmarked,
+          bookmarked: !!isBookmarked,
+          isReposted,
+          reposted: isReposted
         }
       }
     });
@@ -574,11 +628,13 @@ exports.getPostThread = catchAsync(async (req, res, next) => {
       data: {
         post: {
           ...post.toObject(),
-          isLiked: likedPostIds.has(post._id.toString())
+          isLiked: likedPostIds.has(post._id.toString()),
+          liked: likedPostIds.has(post._id.toString())
         },
         replies: replies.map(r => ({
           ...r.toObject(),
-          isLiked: likedPostIds.has(r._id.toString())
+          isLiked: likedPostIds.has(r._id.toString()),
+          liked: likedPostIds.has(r._id.toString())
         }))
       }
     });
@@ -691,6 +747,7 @@ exports.toggleLike = catchAsync(async (req, res, next) => {
     message: result.message,
     data: {
       liked: result.liked,
+      isLiked: result.liked,
       likesCount: updatedPost.engagement.likes
     }
   });
@@ -708,7 +765,7 @@ exports.unlikePost = catchAsync(async (req, res, next) => {
 
   const existingLike = await Like.findOne({ user: userId, post: postId });
   if (existingLike) {
-    await existingLike.remove();
+    await existingLike.deleteOne();
   }
 
   const updatedPost = await Post.findById(postId);
@@ -741,6 +798,7 @@ exports.unlikePost = catchAsync(async (req, res, next) => {
     message: 'Post unliked',
     data: {
       liked: false,
+      isLiked: false,
       likesCount
     }
   });
@@ -786,7 +844,8 @@ exports.toggleBookmark = catchAsync(async (req, res, next) => {
     success: true,
     message: result.message,
     data: {
-      bookmarked: result.bookmarked
+      bookmarked: result.bookmarked,
+      isBookmarked: result.bookmarked
     }
   });
 });
@@ -803,14 +862,15 @@ exports.unbookmarkPost = catchAsync(async (req, res, next) => {
 
   const existingBookmark = await Bookmark.findOne({ user: userId, post: postId });
   if (existingBookmark) {
-    await existingBookmark.remove();
+    await existingBookmark.deleteOne();
   }
 
   res.status(200).json({
     success: true,
     message: 'Bookmark removed',
     data: {
-      bookmarked: false
+      bookmarked: false,
+      isBookmarked: false
     }
   });
 });
@@ -837,13 +897,23 @@ exports.removeRepost = catchAsync(async (req, res, next) => {
   await Post.findByIdAndUpdate(postId, {
     $inc: { 'engagement.reposts': -1 }
   });
+  const updatedOriginalPost = await Post.findById(postId).select('engagement.reposts');
+
+  realtimeEvents.emit('post.reposted', {
+    postId,
+    repostsCount: updatedOriginalPost?.engagement?.reposts || 0,
+    userId,
+    reposted: false
+  });
 
   res.status(200).json({
     success: true,
     message: 'Repost removed successfully',
     data: {
       reposted: false,
-      postId
+      isReposted: false,
+      postId,
+      repostsCount: updatedOriginalPost?.engagement?.reposts || 0
     }
   });
 });

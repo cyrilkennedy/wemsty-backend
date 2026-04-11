@@ -53,13 +53,21 @@ LikeSchema.post('remove', async function(doc) {
   });
 });
 
+// Update post engagement counter on unlike (Mongoose v7/v8 deleteOne path)
+LikeSchema.post('deleteOne', { document: true, query: false }, async function() {
+  const Post = mongoose.model('Post');
+  await Post.findByIdAndUpdate(this.post, {
+    $inc: { 'engagement.likes': -1 }
+  });
+});
+
 // Prevent duplicate likes
 LikeSchema.statics.toggleLike = async function(userId, postId, source = 'home_feed') {
   const existingLike = await this.findOne({ user: userId, post: postId });
   
   if (existingLike) {
     // Unlike
-    await existingLike.remove();
+    await existingLike.deleteOne();
     return { liked: false, message: 'Post unliked' };
   } else {
     // Like

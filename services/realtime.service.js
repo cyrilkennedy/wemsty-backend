@@ -184,12 +184,33 @@ function initializeRealtime(httpServer) {
   });
 
   realtimeEvents.on('post.liked', ({ postId, likesCount, userId }) => {
-    // Notify clients interested in this specific post's state
-    namespace.to(`post:${postId.toString()}`).emit('post.liked.updated', { 
-      postId, 
-      likesCount, 
-      userId 
-    });
+    const payload = {
+      postId,
+      likesCount,
+      userId
+    };
+
+    // Room-targeted updates (if clients joined post room)
+    namespace.to(`post:${postId.toString()}`).emit('post.liked.updated', payload);
+
+    // Global updates for clients that did not join post rooms
+    namespace.emit('post.liked.updated', payload);
+
+    // Backward-compat event name
+    namespace.emit('post:liked', payload);
+  });
+
+  realtimeEvents.on('post.reposted', ({ postId, repostsCount, userId, reposted }) => {
+    const payload = {
+      postId,
+      repostsCount,
+      userId,
+      reposted: !!reposted
+    };
+
+    namespace.to(`post:${postId.toString()}`).emit('post.reposted.updated', payload);
+    namespace.emit('post.reposted.updated', payload);
+    namespace.emit('post:reposted', payload);
   });
 
   namespace.on('connection', async (socket) => {

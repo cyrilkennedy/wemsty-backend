@@ -844,7 +844,71 @@ Valid actions: `dismiss`, `warn`, `suspend`, `ban`, `delete`
 
 ## Realtime (WebSocket)
 
-Wemsty uses Socket.IO. Connect to the `/realtime` namespace:
+Wemsty uses Socket.IO with the `/realtime` namespace.
+
+### Connection Rules
+
+- Use a valid **access token** in `auth.token` when connecting.
+- Namespace must be `/realtime` (not root namespace).
+- On token refresh, update `socket.auth.token` and reconnect.
+
+### Frontend Listener Template
+
+```javascript
+import { io } from 'socket.io-client';
+
+let socket;
+
+export function connectRealtime(accessToken, handlers = {}) {
+  socket = io('https://wemsty-backend.onrender.com/realtime', {
+    transports: ['websocket'],
+    auth: { token: accessToken }
+  });
+
+  socket.on('connect', () => {
+    handlers.onConnect?.(socket.id);
+  });
+
+  socket.on('connect_error', (err) => {
+    handlers.onError?.(err);
+  });
+
+  // Post live updates
+  socket.on('post.liked.updated', (payload) => handlers.onPostLiked?.(payload));
+  socket.on('post.reposted.updated', (payload) => handlers.onPostReposted?.(payload));
+  socket.on('post.created', ({ post }) => handlers.onPostCreated?.(post));
+
+  // Backward-compatible aliases (optional)
+  socket.on('post:liked', (payload) => handlers.onPostLiked?.(payload));
+  socket.on('post:reposted', (payload) => handlers.onPostReposted?.(payload));
+
+  // Messaging and notifications
+  socket.on('channel.message.created', ({ message }) => handlers.onChannelMessage?.(message));
+  socket.on('dm.message.created', ({ message }) => handlers.onDmMessage?.(message));
+  socket.on('notifications.unread.updated', (payload) => handlers.onUnreadCount?.(payload));
+
+  // Presence and typing
+  socket.on('presence.updated', (payload) => handlers.onPresence?.(payload));
+  socket.on('channel.typing.updated', (payload) => handlers.onTyping?.(payload));
+
+  return socket;
+}
+
+export function updateRealtimeToken(newAccessToken) {
+  if (!socket) return;
+  socket.auth = { token: newAccessToken };
+  socket.disconnect();
+  socket.connect();
+}
+
+export function disconnectRealtime() {
+  if (!socket) return;
+  socket.disconnect();
+  socket = null;
+}
+```
+
+Basic connection example:
 
 ```javascript
 import io from 'socket.io-client';
@@ -860,25 +924,35 @@ const socket = io('http://localhost:3001/realtime', {
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `join:circle` | `{ circleId }` | Join circle channel |
-| `leave:circle` | `{ circleId }` | Leave circle channel |
-| `typing:start` | `{ conversationId }` | User started typing |
-| `typing:stop` | `{ conversationId }` | User stopped typing |
-| `message:read` | `{ messageId }` | Mark message read |
+| `channel.join` | `{ channelId, circleId? }` | Join a channel room |
+| `channel.leave` | `{ channelId }` | Leave a channel room |
+| `channel.message.create` | `{ channelId, circleId?, bodyText, clientMessageId?, replyToMessageId? }` | Send channel message |
+| `dm.open` | `{ conversationId }` or `{ userId }` | Open/create DM conversation |
+| `dm.message.create` | `{ conversationId, bodyText, clientMessageId? }` | Send DM message |
+| `channel.typing.start` | `{ channelId, circleId? }` | Start typing state |
+| `channel.typing.stop` | `{ channelId }` | Stop typing state |
+| `read.update` | `{ scopeType, scopeId, lastReadMessageId? }` | Update read state |
+| `presence.heartbeat` | `{ status: "online" | "away" | "offline" }` | Update presence |
 
 ### Server -> Client Events
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `new:notification` | `{ notification }` | New notification |
-| `new:message` | `{ message }` | New message |
-| `message:read` | `{ messageId, userId }` | Read receipt |
-| `typing` | `{ userId, conversationId }` | Typing indicator |
-| `user:online` | `{ userId }` | User online |
-| `user:offline` | `{ userId }` | User offline |
-| `post:liked` | `{ postId, userId }` | Post liked |
-| `post:replied` | `{ postId, reply }` | Post replied |
-| `user:followed` | `{ userId, follower }` | User followed |
+| `notifications.unread.updated` | `{ unreadCount }` | Unread notification count changed |
+| `channel.message.created` | `{ message }` | New channel message |
+| `dm.message.created` | `{ message }` | New DM message |
+| `presence.updated` | `{ userId, status, at }` | Presence state changed |
+| `channel.typing.updated` | `{ channelId, userIds }` | Channel typing users updated |
+| `post.created` | `{ post }` | New post published |
+| `post:liked` | `{ postId, likesCount, userId }` | Backward-compatible like update event |
+| `post.liked.updated` | `{ postId, likesCount, userId }` | Primary like update event |
+| `post:reposted` | `{ postId, repostsCount, userId, reposted }` | Backward-compatible repost update event |
+| `post.reposted.updated` | `{ postId, repostsCount, userId, reposted }` | Primary repost update event |
+
+Ack pattern:
+- Most client-emitted events support callback ack.
+- Success shape: `{ ok: true, ... }`
+- Failure shape: `{ ok: false, error: { code, message } }`
 
 ---
 

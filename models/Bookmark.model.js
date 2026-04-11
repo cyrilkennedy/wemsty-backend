@@ -45,7 +45,7 @@ BookmarkSchema.statics.toggleBookmark = async function(userId, postId, folderNam
   
   if (existing) {
     // Remove bookmark
-    await existing.remove();
+    await existing.deleteOne();
     return { bookmarked: false, message: 'Bookmark removed' };
   } else {
     // Add bookmark
