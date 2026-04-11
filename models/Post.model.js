@@ -270,7 +270,7 @@ PostSchema.virtual('engagementRate').get(function() {
 // ════════════════════════════════════════════════
 
 // Extract hashtags from text
-PostSchema.pre('save', function(next) {
+PostSchema.pre('save', function() {
   if (this.isModified('category') || !this.category) {
     this.category = normalizeCategorySlug(this.category || DEFAULT_POST_CATEGORY);
   }
@@ -286,11 +286,10 @@ PostSchema.pre('save', function(next) {
     
     this.content.hashtags = [...new Set(hashtags)]; // Remove duplicates
   }
-  next();
 });
 
 // Calculate engagement score
-PostSchema.pre('save', function(next) {
+PostSchema.pre('save', function() {
   if (this.isModified('engagement')) {
     const { likes, comments, reposts, views } = this.engagement;
     
@@ -303,7 +302,6 @@ PostSchema.pre('save', function(next) {
       this.engagement.velocity = hoursOld > 0 ? likes / hoursOld : likes;
     }
   }
-  next();
 });
 
 // ════════════════════════════════════════════════
