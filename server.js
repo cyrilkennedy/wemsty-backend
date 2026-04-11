@@ -12,6 +12,7 @@ const rateLimit = require('express-rate-limit');
 
 // Import configs & middlewares
 const connectDB = require('./config/mongodb');
+const redisManager = require('./config/redis');
 const errorMiddleware = require('./middlewares/error.middleware');
 const { initializeRealtime } = require('./services/realtime.service');
 
@@ -177,6 +178,15 @@ async function startServer() {
     // Connect to database first
     await connectDB();
     
+    // Connect to Redis for caching/rate limiting (fail-open if unavailable)
+    try {
+      await redisManager.connect();
+      console.log('Redis: Connected');
+    } catch (redisError) {
+      console.warn('Redis: Unavailable, continuing without cache acceleration');
+      console.warn(redisError.message);
+    }
+    
     // Create HTTP server
     const httpServer = http.createServer(app);
     
@@ -233,13 +243,15 @@ process.on('uncaughtException', (err) => {
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('👋 SIGTERM received. Shutting down gracefully...');
+  console.log('SIGTERM received. Shutting down gracefully...');
   if (server) {
     server.close(() => {
-      console.log('✅ Process terminated');
+      redisManager.close().catch(() => {});
+      console.log('Process terminated');
       process.exit(0);
     });
   } else {
+    redisManager.close().catch(() => {});
     process.exit(0);
   }
 });
@@ -248,3 +260,4 @@ process.on('SIGTERM', () => {
 startServer();
 
 module.exports = app;
+

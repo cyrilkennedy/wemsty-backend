@@ -23,8 +23,11 @@ const realtimeEvents = require('../services/realtime-events.service');
 const algoliaService = require('../services/algolia.service');
 
 async function attachViewerStateToPosts(posts, userId) {
+  const toPlainPost = (post) =>
+    typeof post?.toObject === 'function' ? post.toObject() : post;
+
   if (!userId || posts.length === 0) {
-    return posts.map((post) => post.toObject());
+    return posts.map((post) => toPlainPost(post));
   }
 
   const postIds = posts.map((post) => post._id);
@@ -50,7 +53,7 @@ async function attachViewerStateToPosts(posts, userId) {
   const repostedPostIds = new Set(userReposts.map((repost) => repost.originalPost.toString()));
 
   return posts.map((post) => ({
-    ...post.toObject(),
+    ...toPlainPost(post),
     isLiked: likedPostIds.has(post._id.toString()),
     liked: likedPostIds.has(post._id.toString()),
     isBookmarked: bookmarkedPostIds.has(post._id.toString()),

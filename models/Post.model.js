@@ -235,6 +235,8 @@ PostSchema.index({ parentPost: 1, createdAt: -1 });
 PostSchema.index({ category: 1, visibility: 1, status: 1, createdAt: -1 });
 PostSchema.index({ 'content.hashtags': 1, createdAt: -1 });
 PostSchema.index({ visibility: 1, status: 1, sphereEligible: 1 });
+PostSchema.index({ visibility: 1, status: 1, sphereEligible: 1, createdAt: -1 });
+PostSchema.index({ visibility: 1, status: 1, sphereEligible: 1, sphereScore: -1, 'engagement.score': -1, createdAt: -1 });
 PostSchema.index({ sphereScore: -1, createdAt: -1 }); // For You feed
 PostSchema.index({ 'engagement.score': -1, createdAt: -1 }); // Trending
 
@@ -311,6 +313,8 @@ PostSchema.pre('save', function() {
 // Get posts for home feed (following)
 PostSchema.statics.getHomeFeed = async function(userId, options = {}) {
   const { page = 1, limit = 20 } = options;
+  const safePage = Math.max(1, parseInt(page, 10) || 1);
+  const safeLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
   const Follow = mongoose.model('Follow');
   const Block = mongoose.model('Block');
   const Mute = mongoose.model('Mute');
@@ -352,18 +356,19 @@ PostSchema.statics.getHomeFeed = async function(userId, options = {}) {
     .populate('author', 'username profile.displayName profile.avatar isEmailVerified')
     .populate('originalPost')
     .sort({ createdAt: -1 })
-    .limit(limit)
-    .skip((page - 1) * limit);
+    .limit(safeLimit)
+    .skip((safePage - 1) * safeLimit)
+    .lean();
   
   const total = await this.countDocuments(query);
   
   return {
     posts,
     pagination: {
-      page,
-      limit,
+      page: safePage,
+      limit: safeLimit,
       total,
-      pages: Math.ceil(total / limit)
+      pages: Math.ceil(total / safeLimit)
     }
   };
 };
@@ -371,6 +376,8 @@ PostSchema.statics.getHomeFeed = async function(userId, options = {}) {
 // Get posts for Sphere/For You feed
 PostSchema.statics.getSphereFeed = async function(userId, options = {}) {
   const { page = 1, limit = 20, mode = 'top' } = options;
+  const safePage = Math.max(1, parseInt(page, 10) || 1);
+  const safeLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
   const Block = mongoose.model('Block');
 
   let blockedIds = [];
@@ -397,24 +404,27 @@ PostSchema.statics.getSphereFeed = async function(userId, options = {}) {
   const posts = await this.find(query)
     .populate('author', 'username profile.displayName profile.avatar isEmailVerified')
     .sort(sort)
-    .limit(limit)
-    .skip((page - 1) * limit);
+    .limit(safeLimit)
+    .skip((safePage - 1) * safeLimit)
+    .lean();
 
   const total = await this.countDocuments(query);
 
   return {
     posts,
     pagination: {
-      page,
-      limit,
+      page: safePage,
+      limit: safeLimit,
       total,
-      pages: Math.ceil(total / limit)
+      pages: Math.ceil(total / safeLimit)
     }
   };
 };
 
 PostSchema.statics.getCategoryFeed = async function(category, userId, options = {}) {
   const { page = 1, limit = 20, mode = 'latest' } = options;
+  const safePage = Math.max(1, parseInt(page, 10) || 1);
+  const safeLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
   const Block = mongoose.model('Block');
 
   let blockedIds = [];
@@ -442,18 +452,19 @@ PostSchema.statics.getCategoryFeed = async function(category, userId, options = 
     .populate('author', 'username profile.displayName profile.avatar isEmailVerified')
     .populate('originalPost')
     .sort(sort)
-    .limit(limit)
-    .skip((page - 1) * limit);
+    .limit(safeLimit)
+    .skip((safePage - 1) * safeLimit)
+    .lean();
 
   const total = await this.countDocuments(query);
 
   return {
     posts,
     pagination: {
-      page,
-      limit,
+      page: safePage,
+      limit: safeLimit,
       total,
-      pages: Math.ceil(total / limit)
+      pages: Math.ceil(total / safeLimit)
     }
   };
 };
@@ -461,6 +472,8 @@ PostSchema.statics.getCategoryFeed = async function(category, userId, options = 
 // Get user profile posts
 PostSchema.statics.getUserPosts = async function(userId, viewerId, options = {}) {
   const { page = 1, limit = 20, includeReplies = false } = options;
+  const safePage = Math.max(1, parseInt(page, 10) || 1);
+  const safeLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
   const Block = mongoose.model('Block');
   
   // Check if blocked
@@ -488,14 +501,15 @@ PostSchema.statics.getUserPosts = async function(userId, viewerId, options = {})
     .populate('author', 'username profile.displayName profile.avatar')
     .populate('originalPost')
     .sort({ createdAt: -1 })
-    .limit(limit)
-    .skip((page - 1) * limit);
+    .limit(safeLimit)
+    .skip((safePage - 1) * safeLimit)
+    .lean();
   
   const total = await this.countDocuments(query);
   
   return {
     posts,
-    pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+    pagination: { page: safePage, limit: safeLimit, total, pages: Math.ceil(total / safeLimit) }
   };
 };
 

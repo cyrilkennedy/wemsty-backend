@@ -242,11 +242,7 @@ class FeedService {
 
       // Hydrate posts with author and engagement data
       const hydratedPosts = await this.hydratePosts(paginatedPosts, userId);
-
-      // Cache the results
-      await this.cacheFeed(userId, hydratedPosts, page, limit);
-
-      return {
+      const payload = {
         items: hydratedPosts,
         pagination: {
           page,
@@ -256,6 +252,11 @@ class FeedService {
           hasMore: startIndex + limit < scoredPosts.length
         }
       };
+
+      // Cache the results
+      await this.cacheFeed(userId, payload, page, limit);
+
+      return payload;
     } catch (error) {
       console.error('Error getting home feed:', error.message);
       throw error;
@@ -306,11 +307,7 @@ class FeedService {
 
       // Hydrate posts
       const hydratedPosts = await this.hydratePosts(paginatedPosts, userId);
-
-      // Cache results
-      await this.cacheSphereFeed(userId, hydratedPosts, page, limit, mode);
-
-      return {
+      const payload = {
         items: hydratedPosts,
         pagination: {
           page,
@@ -320,6 +317,11 @@ class FeedService {
           hasMore: startIndex + limit < scoredPosts.length
         }
       };
+
+      // Cache results
+      await this.cacheSphereFeed(userId, payload, page, limit, mode);
+
+      return payload;
     } catch (error) {
       console.error('Error getting sphere feed:', error.message);
       throw error;
@@ -372,9 +374,27 @@ class FeedService {
    * Score and rank candidates
    */
   async scoreAndRankCandidates(candidates, viewerId, context = {}) {
+    if (!candidates.length) {
+      return [];
+    }
+
+    const authorIds = [...new Set(
+      candidates
+        .map((post) => post.author?.toString())
+        .filter(Boolean)
+    )];
+
+    const authors = await User.find({ _id: { $in: authorIds } })
+      .select('_id trustScore createdAt')
+      .lean();
+    const authorMap = new Map(authors.map((author) => [author._id.toString(), author]));
+
     const scored = await Promise.all(
       candidates.map(async (post) => {
-        const score = await this.calculatePostScore(post, viewerId, context);
+        const score = await this.calculatePostScore(post, viewerId, {
+          ...context,
+          author: authorMap.get(post.author?.toString()) || null
+        });
         return { ...post, _score: score };
       })
     );
@@ -387,37 +407,77 @@ class FeedService {
    * Hydrate posts with author and viewer state
    */
   async hydratePosts(posts, viewerId) {
-    return Promise.all(
-      posts.map(async (post) => {
-        // Populate author
-        const author = await User.findById(post.author)
-          .select('username profile.displayName profile.avatar isEmailVerified trustScore')
-          .lean();
+    if (!posts.length) {
+      return [];
+    }
 
-        // Check viewer interactions
-        const viewerState = await this.getViewerPostState(post._id, viewerId);
+    const postIds = posts.map((post) => post._id);
+    const authorIds = [...new Set(
+      posts
+        .map((post) => post.author?.toString())
+        .filter(Boolean)
+    )];
 
-        return {
-          post: {
-            id: post._id,
-            author: author || { username: 'deleted', profile: {} },
-            content: post.content,
-            postType: post.postType,
-            visibility: post.visibility,
-            engagement: post.engagement,
-            createdAt: post.createdAt,
-            updatedAt: post.updatedAt,
-            sphereScore: post.sphereScore,
-            moderation: post.moderation
-          },
-          viewerState,
-          rank: {
-            score: post._score,
-            reason: this.getRankReason(post, viewerId)
-          }
-        };
-      })
-    );
+    const authors = await User.find({ _id: { $in: authorIds } })
+      .select('username profile.displayName profile.avatar isEmailVerified trustScore')
+      .lean();
+    const authorMap = new Map(authors.map((author) => [author._id.toString(), author]));
+
+    let likedIds = new Set();
+    let repostedIds = new Set();
+    let bookmarkedIds = new Set();
+
+    if (viewerId) {
+      const [likes, reposts, bookmarks] = await Promise.all([
+        require('../models/Like.model')
+          .find({ post: { $in: postIds }, user: viewerId })
+          .select('post')
+          .lean(),
+        Post.find({
+          author: viewerId,
+          originalPost: { $in: postIds },
+          postType: { $in: ['repost', 'quote'] },
+          status: 'active'
+        })
+          .select('originalPost')
+          .lean(),
+        require('../models/Bookmark.model')
+          .find({ post: { $in: postIds }, user: viewerId })
+          .select('post')
+          .lean()
+      ]);
+
+      likedIds = new Set(likes.map((item) => item.post.toString()));
+      repostedIds = new Set(reposts.map((item) => item.originalPost.toString()));
+      bookmarkedIds = new Set(bookmarks.map((item) => item.post.toString()));
+    }
+
+    return posts.map((post) => {
+      const postId = post._id.toString();
+      return {
+        post: {
+          id: post._id,
+          author: authorMap.get(post.author?.toString()) || { username: 'deleted', profile: {} },
+          content: post.content,
+          postType: post.postType,
+          visibility: post.visibility,
+          engagement: post.engagement,
+          createdAt: post.createdAt,
+          updatedAt: post.updatedAt,
+          sphereScore: post.sphereScore,
+          moderation: post.moderation
+        },
+        viewerState: {
+          liked: likedIds.has(postId),
+          reposted: repostedIds.has(postId),
+          bookmarked: bookmarkedIds.has(postId)
+        },
+        rank: {
+          score: post._score,
+          reason: this.getRankReason(post, viewerId)
+        }
+      };
+    });
   }
 
   /**
@@ -430,7 +490,12 @@ class FeedService {
 
     const [like, repost, bookmark] = await Promise.all([
       require('../models/Like.model').findOne({ post: postId, user: viewerId }).lean(),
-      require('../models/Repost.model').findOne({ post: postId, user: viewerId }).lean(),
+      Post.findOne({
+        author: viewerId,
+        originalPost: postId,
+        postType: { $in: ['repost', 'quote'] },
+        status: 'active'
+      }).select('_id').lean(),
       require('../models/Bookmark.model').findOne({ post: postId, user: viewerId }).lean()
     ]);
 
@@ -469,7 +534,7 @@ class FeedService {
       blockedIds.add(m.muted.toString());
     });
 
-    return blockedIds;
+    return [...blockedIds];
   }
 
   /**

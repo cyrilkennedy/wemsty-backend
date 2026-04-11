@@ -2,11 +2,15 @@ const mongoose = require('mongoose');
 
 const connectDB = async () => {
   try {
+    const maxPoolSize = parseInt(process.env.MONGODB_MAX_POOL_SIZE || '10', 10);
+    const minPoolSize = parseInt(process.env.MONGODB_MIN_POOL_SIZE || '2', 10);
+
     const conn = await mongoose.connect(process.env.MONGODB_URI, {
       // Connection options for better reliability
       serverSelectionTimeoutMS: 5000, // Timeout after 5s instead of 30s
       socketTimeoutMS: 45000, // Close sockets after 45s of inactivity
-      maxPoolSize: 10, // Maintain up to 10 socket connections
+      maxPoolSize, // Maintain up to N socket connections
+      minPoolSize, // Keep a warm minimum pool
     });
     
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);

@@ -1,192 +1,112 @@
-# Wemsty Backend - Production Deployment Checklist
+# Wemsty Backend - Production Checklist
 
-## 🔒 Security
+This checklist is written for junior developers. Follow from top to bottom.
 
-- [ ] **CORS Configuration**: Restrict to your actual frontend domains
-  ```javascript
-  // In server.js
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || ['https://yourdomain.com']
-  ```
+## 1) Must-have environment variables
 
-- [ ] **Environment Variables**: Ensure all secrets are properly set
-  - `JWT_SECRET`
-  - `JWT_ACCESS_SECRET`
-  - `JWT_REFRESH_SECRET`
-  - `MONGODB_URI`
-  - `ALGOLIA_APP_ID` & `ALGOLIA_ADMIN_KEY`
-  - `PAYSTACK_SECRET_KEY`
-  - Database credentials
+- [ ] `NODE_ENV=production`
+- [ ] `PORT` (Render usually sets this automatically)
+- [ ] `MONGODB_URI`
+- [ ] `JWT_SECRET`
+- [ ] `JWT_ACCESS_SECRET`
+- [ ] `JWT_REFRESH_SECRET`
+- [ ] `ALGOLIA_APP_ID`
+- [ ] `ALGOLIA_ADMIN_KEY`
+- [ ] `PAYSTACK_SECRET_KEY`
+- [ ] `ALLOWED_ORIGINS` (comma-separated frontend domains)
 
-- [ ] **Rate Limiting**: Consider stricter limits for production
-  - Auth: 5 requests/15min ✓
-  - Global: Consider reducing from 100 to 50 requests/15min
+Recommended performance vars:
 
-- [ ] **HTTPS**: Ensure your server is behind HTTPS in production
-  - Use a reverse proxy (nginx, Apache) with SSL/TLS
-  - Set `trust proxy` correctly
+- [ ] `MONGODB_MAX_POOL_SIZE` (default in code: `10`)
+- [ ] `MONGODB_MIN_POOL_SIZE` (default in code: `2`)
 
-- [ ] **Helmet.js**: Already configured ✓
-  - CSP is disabled for development; consider enabling for production
+Redis var:
 
----
+- [ ] `REDIS_URL` (example: `redis://default:password@host:6379`)
 
-## 🐛 Code Issues to Fix
+## 2) Redis: what it is doing in this project
 
-### 1. Remove Debug Middleware in Production
-```javascript
-// In server.js - wrap in development check
-if (process.env.NODE_ENV === 'development') {
-  app.use((req, res, next) => {
-    console.log(`🔍 Request received: ${req.method} ${req.path}`);
-    console.log('Headers:', req.headers);
-    next();
-  });
-}
-```
+Redis is used for cache acceleration (especially feed caching), and helper utilities used by realtime features.
 
-### 2. Enable Error Handler
-```javascript
-// In server.js - uncomment this line
-app.use(errorMiddleware);
-```
+Current behavior in `server.js`:
 
-### 3. Fix Duplicate Index Warning
-In `models/UserProfile.model.js`, remove duplicate index definition.
+- The app tries to connect to Redis during startup.
+- If Redis is unavailable, the app still starts (fail-open behavior).
+- You will see logs like:
+  - `Redis: Connected` when successful
+  - `Redis: Unavailable, continuing without cache acceleration` when not available
 
----
+So yes, Redis is important for speed, but it is not a hard blocker for boot.
 
-## 📊 Monitoring & Logging
+## 3) Redis production setup steps
 
-- [ ] **Logging**: Set up proper logging (Winston, Pino, etc.)
-- [ ] **Error Tracking**: Integrate with Sentry or similar
-- [ ] **Performance Monitoring**: Consider APM tools (New Relic, DataDog)
-- [ ] **Health Checks**: Already have `/api/health` endpoint ✓
+- [ ] Create a Redis instance (Upstash, Redis Cloud, or Render Redis)
+- [ ] Copy its connection string into `REDIS_URL`
+- [ ] Redeploy backend
+- [ ] Check deployment logs for `Redis: Connected`
+- [ ] Call your hot feed endpoints and confirm faster repeated responses
 
----
+If you do not set `REDIS_URL`, the backend will try `redis://localhost:6379`, which usually fails on cloud hosts.
 
-## 🗄️ Database
+## 4) MongoDB performance checks
 
-- [ ] **MongoDB Atlas**: 
-  - Ensure cluster is properly sized for production
-  - Set up backup schedules
-  - Configure IP whitelist (or allow all if using VPC peering)
+- [ ] Confirm indexes exist for high-traffic queries
+- [ ] Keep query projections small (do not select unnecessary fields)
+- [ ] Use pagination (`page`, `limit`) on list endpoints
+- [ ] Tune pool values based on real traffic:
+  - Start with `MONGODB_MAX_POOL_SIZE=10`
+  - Start with `MONGODB_MIN_POOL_SIZE=2`
+  - Increase max pool gradually after monitoring
 
-- [ ] **Indexes**: Verify all necessary indexes are created
-- [ ] **Connection Pool**: Current settings (maxPoolSize: 10) should be reviewed based on expected load
+## 5) API and server hardening
 
----
+- [ ] Restrict CORS to real frontend domains (avoid wildcard in production)
+- [ ] Keep rate limits enabled
+- [ ] Re-enable/confirm global production error middleware
+- [ ] Remove verbose request-debug logging in production
+- [ ] Keep HTTPS termination enabled at your platform/proxy
 
-## 🚀 Performance
+## 6) Observability
 
-- [ ] **Caching**: 
-  - Redis is configured ✓
-  - Consider caching frequently accessed data
+- [ ] Structured app logs (Winston/Pino)
+- [ ] Error tracking (Sentry or similar)
+- [ ] Alerts for 5xx spikes
+- [ ] Monitor MongoDB latency and connection count
+- [ ] Monitor Redis memory, evictions, and connection status
 
-- [ ] **Compression**: Enable response compression
-  ```javascript
-  const compression = require('compression');
-  app.use(compression());
-  ```
+## 7) Pre-launch verification
 
-- [ ] **Static Assets**: Serve static assets via CDN
-- [ ] **Database Queries**: Ensure proper indexing and query optimization
+- [ ] Auth flow (`/api/auth/login`, `/api/auth/me`) works with valid token
+- [ ] Create/read posts work without 500 errors
+- [ ] Like/unlike/repost/unrepost/bookmark/unbookmark endpoints return expected status
+- [ ] Comment create/edit/delete works
+- [ ] Sphere and home feeds return data and not endless loading state
+- [ ] Socket client can connect and receive realtime events
 
----
+## 8) Quick troubleshooting
 
-## 🔄 Deployment
+`401 Unauthorized`:
 
-- [ ] **Process Manager**: Use PM2 or similar
-  ```bash
-  npm install -g pm2
-  pm2 start server.js --name wemsty-backend
-  pm2 save
-  pm2 startup
-  ```
+- Usually token/cookie issue from frontend auth state.
+- Verify `Authorization: Bearer <token>` or cookie config and CORS credentials.
 
-- [ ] **Environment**: Set `NODE_ENV=production`
-- [ ] **Build Process**: If using TypeScript, ensure proper build
-- [ ] **Rollback Plan**: Have a rollback strategy
+`500` + `req.body is undefined`:
 
----
+- Ensure `Content-Type: application/json` and request body is sent.
 
-## 🛡️ Security Headers (Additional)
+Redis unreachable:
 
-Consider adding these headers via Helmet or manually:
+- Check `REDIS_URL`
+- Check provider IP/network rules
+- Confirm TLS/port requirements from provider docs
 
-```javascript
-app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  next();
-});
-```
+## 9) Deployment notes
+
+- [ ] Keep rollback plan ready
+- [ ] Backup policy enabled in MongoDB Atlas
+- [ ] Smoke test immediately after each deploy
 
 ---
 
-## 📝 Environment Variables for Production
-
-Add these to your `.env` or environment configuration:
-
-```env
-# Server
-NODE_ENV=production
-PORT=3001
-
-# CORS
-ALLOWED_ORIGINS=https://wemsty.com,https://www.wemsty.com
-
-# Database
-MONGODB_URI=mongodb+srv://...
-
-# Security
-JWT_SECRET=...
-JWT_ACCESS_SECRET=...
-JWT_REFRESH_SECRET=...
-
-# External Services
-ALGOLIA_APP_ID=...
-ALGOLIA_ADMIN_KEY=...
-PAYSTACK_SECRET_KEY=...
-
-# Email (if using)
-EMAIL_HOST=...
-EMAIL_PORT=...
-EMAIL_USER=...
-EMAIL_PASS=...
-
-# Redis (if using)
-REDIS_URL=...
-
-# Optional: Feature Flags
-ENABLE_RATE_LIMITING=true
-ENABLE_LOGGING=true
-LOG_LEVEL=info
-```
-
----
-
-## ✅ Pre-Launch Testing
-
-- [ ] Test all authentication flows
-- [ ] Test file uploads
-- [ ] Test payment integration (use test mode first)
-- [ ] Load test with expected traffic
-- [ ] Test error scenarios
-- [ ] Verify monitoring and alerting
-- [ ] Test database backup and restore
-
----
-
-## 🆘 Emergency Contacts
-
-- **Server Issues**: Check logs, restart PM2
-- **Database Issues**: Check MongoDB Atlas dashboard
-- **Payment Issues**: Check Paystack dashboard
-- **Security Issues**: Review logs, rotate secrets if compromised
-
----
-
-**Last Updated**: 2024
-**Version**: 4.0
+Last Updated: 2026-04-11
+Version: 4.1
