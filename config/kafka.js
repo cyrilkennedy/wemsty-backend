@@ -52,8 +52,8 @@ class KafkaManager {
 
     const topicConfigs = topics.map(topic => ({
       topic,
-      numPartitions: process.env.KAFKA_PARTITIONS || 3,
-      replicationFactor: process.env.KAFKA_REPLICATION || 1
+      numPartitions: parseInt(process.env.KAFKA_PARTITIONS || '3', 10),
+      replicationFactor: parseInt(process.env.KAFKA_REPLICATION || '1', 10)
     }));
 
     try {

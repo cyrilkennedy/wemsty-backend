@@ -126,10 +126,12 @@ router.delete('/repost/:postId', interactionLimiter, postController.removeRepost
 router.post('/reply', postLimiter, postController.createReply);
 router.patch('/reply/:replyId', interactionLimiter, postController.editReply);
 router.delete('/reply/:replyId', interactionLimiter, postController.deleteReply);
+router.post('/reply/:replyId/like', interactionLimiter, postController.likeReply);
+router.delete('/reply/:replyId/like', interactionLimiter, postController.unlikeReply);
 
 /**
  * @route   POST /api/posts/:postId/like
- * @desc    Like or unlike a post
+ * @desc    Like a post (idempotent)
  * @access  Private
  */
 router.post('/:postId/like', interactionLimiter, postController.toggleLike);
@@ -144,7 +146,7 @@ router.get('/:postId/likes', postController.getPostLikes);
 
 /**
  * @route   POST /api/posts/:postId/bookmark
- * @desc    Bookmark or unbookmark a post
+ * @desc    Bookmark a post (idempotent)
  * @access  Private
  */
 router.post('/:postId/bookmark', postController.toggleBookmark);

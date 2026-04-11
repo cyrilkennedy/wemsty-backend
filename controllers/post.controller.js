@@ -22,12 +22,69 @@ const { kafkaManager } = require('../config/kafka');
 const realtimeEvents = require('../services/realtime-events.service');
 const algoliaService = require('../services/algolia.service');
 
-async function attachViewerStateToPosts(posts, userId) {
-  const toPlainPost = (post) =>
-    typeof post?.toObject === 'function' ? post.toObject() : post;
+const REPOST_TYPES = ['repost', 'quote'];
+const LIKE_SOURCE_FALLBACK = 'home_feed';
 
+function toClientPost(post) {
+  const plainPost = typeof post?.toObject === 'function' ? post.toObject() : post;
+  const engagement = plainPost?.engagement || {};
+
+  return {
+    ...plainPost,
+    likesCount: Number(engagement.likes || 0),
+    commentsCount: Number(engagement.comments || 0),
+    repostsCount: Number(engagement.reposts || 0),
+    isQuote: plainPost?.postType === 'quote',
+    isReply: plainPost?.postType === 'reply',
+    isRepost: plainPost?.postType === 'repost' || plainPost?.postType === 'quote'
+  };
+}
+
+async function syncPostCounters(postId, counters = {}) {
+  const nextCounterValues = {};
+
+  if (counters.likes) {
+    nextCounterValues['engagement.likes'] = await Like.countDocuments({ post: postId });
+  }
+
+  if (counters.comments) {
+    nextCounterValues['engagement.comments'] = await Post.countDocuments({
+      parentPost: postId,
+      postType: 'reply',
+      status: 'active'
+    });
+  }
+
+  if (counters.reposts) {
+    nextCounterValues['engagement.reposts'] = await Post.countDocuments({
+      originalPost: postId,
+      postType: { $in: REPOST_TYPES },
+      status: 'active'
+    });
+  }
+
+  const hasUpdates = Object.keys(nextCounterValues).length > 0;
+  const updatedPost = hasUpdates
+    ? await Post.findByIdAndUpdate(
+      postId,
+      { $set: nextCounterValues },
+      { new: true }
+    )
+    : await Post.findById(postId);
+
+  if (!updatedPost) {
+    return null;
+  }
+
+  updatedPost.calculateSphereScore();
+  await updatedPost.save({ validateBeforeSave: false });
+
+  return updatedPost;
+}
+
+async function attachViewerStateToPosts(posts, userId) {
   if (!userId || posts.length === 0) {
-    return posts.map((post) => toPlainPost(post));
+    return posts.map((post) => toClientPost(post));
   }
 
   const postIds = posts.map((post) => post._id);
@@ -43,7 +100,7 @@ async function attachViewerStateToPosts(posts, userId) {
     Post.find({
       author: userId,
       originalPost: { $in: postIds },
-      postType: { $in: ['repost', 'quote'] },
+      postType: { $in: REPOST_TYPES },
       status: 'active'
     }).select('originalPost')
   ]);
@@ -53,7 +110,7 @@ async function attachViewerStateToPosts(posts, userId) {
   const repostedPostIds = new Set(userReposts.map((repost) => repost.originalPost.toString()));
 
   return posts.map((post) => ({
-    ...toPlainPost(post),
+    ...toClientPost(post),
     isLiked: likedPostIds.has(post._id.toString()),
     liked: likedPostIds.has(post._id.toString()),
     isBookmarked: bookmarkedPostIds.has(post._id.toString()),
@@ -143,7 +200,7 @@ exports.createPost = catchAsync(async (req, res, next) => {
     success: true,
     message: 'Post created successfully',
     data: {
-      post,
+      post: toClientPost(post),
       category: getPostCategory(post.category)
     }
   });
@@ -176,7 +233,7 @@ exports.createRepost = catchAsync(async (req, res, next) => {
   const existingRepost = await Post.findOne({
     author: userId,
     originalPost: postId,
-    postType: { $in: ['repost', 'quote'] },
+    postType: { $in: REPOST_TYPES },
     status: 'active'
   });
 
@@ -196,64 +253,96 @@ exports.createRepost = catchAsync(async (req, res, next) => {
           populate: { path: 'author', select: 'username profile.displayName profile.avatar' }
         }
       ]);
+      const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
+      realtimeEvents.emit('post.reposted', {
+        postId,
+        repostsCount: updatedOriginalPost?.engagement?.reposts || 0,
+        userId,
+        reposted: true
+      });
 
       return res.status(200).json({
         success: true,
-        message: 'Repost updated successfully',
+        message: 'Quote updated successfully',
         data: {
-          post: existingRepost,
+          post: toClientPost(existingRepost),
           reposted: true,
           isReposted: true,
-          repostsCount: originalPost.engagement?.reposts ?? 0
+          repostsCount: updatedOriginalPost?.engagement?.reposts ?? originalPost.engagement?.reposts ?? 0
         }
       });
     }
 
-    existingRepost.status = 'deleted';
-    await existingRepost.save({ validateBeforeSave: false });
-
-    await Post.findByIdAndUpdate(postId, {
-      $inc: { 'engagement.reposts': -1 }
-    });
-    const updatedOriginalPost = await Post.findById(postId).select('engagement.reposts');
-
+    const syncedOriginalPost = await syncPostCounters(postId, { reposts: true });
     realtimeEvents.emit('post.reposted', {
       postId,
-      repostsCount: updatedOriginalPost?.engagement?.reposts || 0,
+      repostsCount: syncedOriginalPost?.engagement?.reposts || 0,
       userId,
-      reposted: false
+      reposted: true
     });
 
     return res.status(200).json({
       success: true,
-      message: 'Repost removed successfully',
+      message: 'Post already reposted. Use DELETE /api/posts/repost/:postId to unrepost.',
       data: {
-        reposted: false,
-        isReposted: false,
+        reposted: true,
+        isReposted: true,
         postId,
-        repostsCount: updatedOriginalPost?.engagement?.reposts || 0
+        repostsCount: syncedOriginalPost?.engagement?.reposts ?? 0
       }
     });
   }
 
-  // Create repost
-  const repost = await Post.create({
-    author: userId,
-    postType: quoteText ? 'quote' : 'repost',
-    originalPost: postId,
-    category: originalPost.category,
-    content: {
-      text: quoteText || ''
-    },
-    visibility: originalPost.visibility,
-    sphereEligible: originalPost.visibility === 'public'
-  });
+  let repost;
+  try {
+    repost = await Post.create({
+      author: userId,
+      postType: quoteText ? 'quote' : 'repost',
+      originalPost: postId,
+      category: originalPost.category,
+      content: {
+        text: quoteText || ''
+      },
+      visibility: originalPost.visibility,
+      sphereEligible: originalPost.visibility === 'public'
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      const safeExistingRepost = await Post.findOne({
+        author: userId,
+        originalPost: postId,
+        postType: { $in: REPOST_TYPES },
+        status: 'active'
+      }).populate([
+        { path: 'author', select: 'username profile.displayName profile.avatar' },
+        {
+          path: 'originalPost',
+          populate: { path: 'author', select: 'username profile.displayName profile.avatar' }
+        }
+      ]);
+      const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
+      realtimeEvents.emit('post.reposted', {
+        postId,
+        repostsCount: updatedOriginalPost?.engagement?.reposts || 0,
+        userId,
+        reposted: true
+      });
 
-  // Update original post repost counter
-  await Post.findByIdAndUpdate(postId, {
-    $inc: { 'engagement.reposts': 1 }
-  });
-  const updatedOriginalPost = await Post.findById(postId).select('engagement.reposts');
+      return res.status(200).json({
+        success: true,
+        message: 'Post already reposted',
+        data: {
+          post: safeExistingRepost ? toClientPost(safeExistingRepost) : null,
+          reposted: true,
+          isReposted: true,
+          repostsCount: updatedOriginalPost?.engagement?.reposts ?? 0
+        }
+      });
+    }
+    throw error;
+  }
+
+  const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
 
   // Populate details
   await repost.populate([
@@ -285,9 +374,9 @@ exports.createRepost = catchAsync(async (req, res, next) => {
 
   res.status(201).json({
     success: true,
-    message: quoteText ? 'Quote reposted successfully' : 'Reposted successfully',
+    message: quoteText ? 'Quote repost created successfully' : 'Reposted successfully',
     data: {
-      post: repost,
+      post: toClientPost(repost),
       reposted: true,
       isReposted: true,
       repostsCount: updatedOriginalPost?.engagement?.reposts || 0
@@ -343,9 +432,7 @@ exports.createReply = catchAsync(async (req, res, next) => {
   });
 
   // Update parent post comment counter
-  await Post.findByIdAndUpdate(postId, {
-    $inc: { 'engagement.comments': 1 }
-  });
+  const updatedParentPost = await syncPostCounters(postId, { comments: true });
 
   // Populate details
   await reply.populate([
@@ -373,7 +460,10 @@ exports.createReply = catchAsync(async (req, res, next) => {
   res.status(201).json({
     success: true,
     message: 'Reply posted successfully',
-    data: { reply }
+    data: {
+      reply: toClientPost(reply),
+      commentsCount: updatedParentPost?.engagement?.comments || 0
+    }
   });
 });
 
@@ -416,7 +506,7 @@ exports.editReply = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: 'Comment updated successfully',
-    data: { reply }
+    data: { reply: toClientPost(reply) }
   });
 });
 
@@ -438,9 +528,7 @@ exports.deleteReply = catchAsync(async (req, res, next) => {
   await reply.save({ validateBeforeSave: false });
 
   if (reply.parentPost) {
-    await Post.findByIdAndUpdate(reply.parentPost, {
-      $inc: { 'engagement.comments': -1 }
-    });
+    await syncPostCounters(reply.parentPost, { comments: true });
   }
 
   res.status(200).json({
@@ -568,7 +656,7 @@ exports.getPost = catchAsync(async (req, res, next) => {
       Post.findOne({
         author: userId,
         originalPost: postId,
-        postType: { $in: ['repost', 'quote'] },
+        postType: { $in: REPOST_TYPES },
         status: 'active'
       }).select('_id')
     ]);
@@ -581,7 +669,7 @@ exports.getPost = catchAsync(async (req, res, next) => {
       success: true,
       data: {
         post: {
-          ...post.toObject(),
+          ...toClientPost(post),
           isLiked,
           liked: !!isLiked,
           isBookmarked: !!isBookmarked,
@@ -595,7 +683,7 @@ exports.getPost = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
-    data: { post }
+    data: { post: toClientPost(post) }
   });
 });
 
@@ -630,12 +718,12 @@ exports.getPostThread = catchAsync(async (req, res, next) => {
       success: true,
       data: {
         post: {
-          ...post.toObject(),
+          ...toClientPost(post),
           isLiked: likedPostIds.has(post._id.toString()),
           liked: likedPostIds.has(post._id.toString())
         },
         replies: replies.map(r => ({
-          ...r.toObject(),
+          ...toClientPost(r),
           isLiked: likedPostIds.has(r._id.toString()),
           liked: likedPostIds.has(r._id.toString())
         }))
@@ -645,7 +733,10 @@ exports.getPostThread = catchAsync(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
-    data: { post, replies }
+    data: {
+      post: toClientPost(post),
+      replies: replies.map((reply) => toClientPost(reply))
+    }
   });
 });
 
@@ -678,7 +769,7 @@ exports.getUserPosts = catchAsync(async (req, res, next) => {
   res.status(200).json({
     success: true,
     data: {
-      posts: result.posts,
+      posts: result.posts.map((post) => toClientPost(post)),
       pagination: result.pagination
     }
   });
@@ -688,33 +779,62 @@ exports.getUserPosts = catchAsync(async (req, res, next) => {
 // POST INTERACTIONS
 // ════════════════════════════════════════════════
 
-// Like/Unlike post
+async function emitLikeSideEffects({ targetPost, actorId, liked, likesCount }) {
+  realtimeEvents.emit('post.liked', {
+    postId: targetPost._id,
+    likesCount,
+    userId: actorId,
+    liked: !!liked,
+    isLiked: !!liked
+  });
+
+  await kafkaManager.emitPostEvent('liked', targetPost._id, actorId, {
+    likesCount,
+    isLiked: !!liked
+  });
+
+  if (algoliaService.client && targetPost.visibility === 'public') {
+    await algoliaService.updatePost(targetPost._id, {
+      'engagement.likes': likesCount
+    });
+  }
+}
+
+// Like post (idempotent create)
 exports.toggleLike = catchAsync(async (req, res, next) => {
   const { postId } = req.params;
   const userId = req.user._id;
   const { source } = req.body || {};
+  const likeSource = source || LIKE_SOURCE_FALLBACK;
 
-  // Check if post exists
   const post = await Post.findById(postId);
   if (!post || post.status === 'deleted') {
     return next(new AppError('Post not found', 404));
   }
 
-  // Check if can view post
   const canView = await post.canBeViewedBy(userId);
   if (!canView) {
     return next(new AppError('Cannot interact with this post', 403));
   }
 
-  // Toggle like
-  const result = await Like.toggleLike(userId, postId, source);
+  let createdLike = false;
+  const existingLike = await Like.findOne({ user: userId, post: postId }).select('_id');
 
-  // Recalculate sphere score
-  const updatedPost = await Post.findById(postId);
-  updatedPost.calculateSphereScore();
-  await updatedPost.save({ validateBeforeSave: false });
+  if (!existingLike) {
+    try {
+      await Like.create({ user: userId, post: postId, metadata: { source: likeSource } });
+      createdLike = true;
+    } catch (error) {
+      if (error?.code !== 11000) {
+        throw error;
+      }
+    }
+  }
 
-  if (result.liked) {
+  const updatedPost = await syncPostCounters(postId, { likes: true });
+  const likesCount = updatedPost?.engagement?.likes || 0;
+
+  if (createdLike && !post.author.equals(userId)) {
     await createNotification({
       recipient: post.author,
       actor: userId,
@@ -725,33 +845,21 @@ exports.toggleLike = catchAsync(async (req, res, next) => {
     });
   }
 
-  // Emit real-time update
-  realtimeEvents.emit('post.liked', { 
-    postId: post._id, 
-    likesCount: updatedPost.engagement.likes,
-    userId: userId 
+  await emitLikeSideEffects({
+    targetPost: post,
+    actorId: userId,
+    liked: true,
+    likesCount
   });
-
-  // Emit Kafka event for engagement tracking
-  await kafkaManager.emitPostEvent('liked', post._id, userId, {
-    likesCount: updatedPost.engagement.likes,
-    isLiked: result.liked
-  });
-
-  // Update Algolia if public
-  if (algoliaService.client && post.visibility === 'public') {
-    await algoliaService.updatePost(post._id, {
-      'engagement.likes': updatedPost.engagement.likes
-    });
-  }
 
   res.status(200).json({
     success: true,
-    message: result.message,
+    message: createdLike ? 'Post liked' : 'Post already liked',
     data: {
-      liked: result.liked,
-      isLiked: result.liked,
-      likesCount: updatedPost.engagement.likes
+      liked: true,
+      isLiked: true,
+      likesCount,
+      action: createdLike ? 'liked' : 'already_liked'
     }
   });
 });
@@ -766,43 +874,126 @@ exports.unlikePost = catchAsync(async (req, res, next) => {
     return next(new AppError('Post not found', 404));
   }
 
-  const existingLike = await Like.findOne({ user: userId, post: postId });
-  if (existingLike) {
-    await existingLike.deleteOne();
-  }
+  const deleteResult = await Like.deleteOne({ user: userId, post: postId });
+  const removed = Number(deleteResult?.deletedCount || 0) > 0;
+  const updatedPost = await syncPostCounters(postId, { likes: true });
+  const likesCount = updatedPost?.engagement?.likes || 0;
 
-  const updatedPost = await Post.findById(postId);
-  if (updatedPost) {
-    updatedPost.calculateSphereScore();
-    await updatedPost.save({ validateBeforeSave: false });
-  }
-
-  const likesCount = updatedPost?.engagement?.likes ?? post.engagement.likes;
-
-  realtimeEvents.emit('post.liked', {
-    postId: post._id,
-    likesCount,
-    userId
+  await emitLikeSideEffects({
+    targetPost: post,
+    actorId: userId,
+    liked: false,
+    likesCount
   });
-
-  await kafkaManager.emitPostEvent('liked', post._id, userId, {
-    likesCount,
-    isLiked: false
-  });
-
-  if (algoliaService.client && post.visibility === 'public') {
-    await algoliaService.updatePost(post._id, {
-      'engagement.likes': likesCount
-    });
-  }
 
   res.status(200).json({
     success: true,
-    message: 'Post unliked',
+    message: removed ? 'Post unliked' : 'Post already unliked',
     data: {
       liked: false,
       isLiked: false,
-      likesCount
+      likesCount,
+      action: removed ? 'unliked' : 'already_unliked'
+    }
+  });
+});
+
+// Like comment/reply (idempotent create)
+exports.likeReply = catchAsync(async (req, res, next) => {
+  const { replyId } = req.params;
+  const userId = req.user._id;
+  const { source } = req.body || {};
+  const likeSource = source || 'thread';
+
+  const reply = await Post.findById(replyId);
+  if (!reply || reply.status === 'deleted' || reply.postType !== 'reply') {
+    return next(new AppError('Comment not found', 404));
+  }
+
+  const canView = await reply.canBeViewedBy(userId);
+  if (!canView) {
+    return next(new AppError('Cannot interact with this comment', 403));
+  }
+
+  let createdLike = false;
+  const existingLike = await Like.findOne({ user: userId, post: replyId }).select('_id');
+
+  if (!existingLike) {
+    try {
+      await Like.create({ user: userId, post: replyId, metadata: { source: likeSource } });
+      createdLike = true;
+    } catch (error) {
+      if (error?.code !== 11000) {
+        throw error;
+      }
+    }
+  }
+
+  const updatedReply = await syncPostCounters(replyId, { likes: true });
+  const likesCount = updatedReply?.engagement?.likes || 0;
+
+  if (createdLike && !reply.author.equals(userId)) {
+    await createNotification({
+      recipient: reply.author,
+      actor: userId,
+      type: 'like',
+      objectType: 'post',
+      objectId: reply._id,
+      previewText: reply.content?.text || ''
+    });
+  }
+
+  await emitLikeSideEffects({
+    targetPost: reply,
+    actorId: userId,
+    liked: true,
+    likesCount
+  });
+
+  res.status(200).json({
+    success: true,
+    message: createdLike ? 'Comment liked' : 'Comment already liked',
+    data: {
+      commentId: replyId,
+      liked: true,
+      isLiked: true,
+      likesCount,
+      action: createdLike ? 'liked' : 'already_liked'
+    }
+  });
+});
+
+// Unlike comment/reply (idempotent)
+exports.unlikeReply = catchAsync(async (req, res, next) => {
+  const { replyId } = req.params;
+  const userId = req.user._id;
+
+  const reply = await Post.findById(replyId);
+  if (!reply || reply.status === 'deleted' || reply.postType !== 'reply') {
+    return next(new AppError('Comment not found', 404));
+  }
+
+  const deleteResult = await Like.deleteOne({ user: userId, post: replyId });
+  const removed = Number(deleteResult?.deletedCount || 0) > 0;
+  const updatedReply = await syncPostCounters(replyId, { likes: true });
+  const likesCount = updatedReply?.engagement?.likes || 0;
+
+  await emitLikeSideEffects({
+    targetPost: reply,
+    actorId: userId,
+    liked: false,
+    likesCount
+  });
+
+  res.status(200).json({
+    success: true,
+    message: removed ? 'Comment unliked' : 'Comment already unliked',
+    data: {
+      commentId: replyId,
+      liked: false,
+      isLiked: false,
+      likesCount,
+      action: removed ? 'unliked' : 'already_unliked'
     }
   });
 });
@@ -829,7 +1020,7 @@ exports.getPostLikes = catchAsync(async (req, res, next) => {
   });
 });
 
-// Bookmark/Unbookmark post
+// Bookmark post (idempotent create)
 exports.toggleBookmark = catchAsync(async (req, res, next) => {
   const { postId } = req.params;
   const userId = req.user._id;
@@ -841,14 +1032,31 @@ exports.toggleBookmark = catchAsync(async (req, res, next) => {
     return next(new AppError('Post not found', 404));
   }
 
-  const result = await Bookmark.toggleBookmark(userId, postId, collection);
+  const existingBookmark = await Bookmark.findOne({ user: userId, post: postId }).select('_id');
+  let createdBookmark = false;
+
+  if (!existingBookmark) {
+    try {
+      await Bookmark.create({
+        user: userId,
+        post: postId,
+        folderName: collection || 'default'
+      });
+      createdBookmark = true;
+    } catch (error) {
+      if (error?.code !== 11000) {
+        throw error;
+      }
+    }
+  }
 
   res.status(200).json({
     success: true,
-    message: result.message,
+    message: createdBookmark ? 'Post bookmarked' : 'Post already bookmarked',
     data: {
-      bookmarked: result.bookmarked,
-      isBookmarked: result.bookmarked
+      bookmarked: true,
+      isBookmarked: true,
+      action: createdBookmark ? 'bookmarked' : 'already_bookmarked'
     }
   });
 });
@@ -863,17 +1071,16 @@ exports.unbookmarkPost = catchAsync(async (req, res, next) => {
     return next(new AppError('Post not found', 404));
   }
 
-  const existingBookmark = await Bookmark.findOne({ user: userId, post: postId });
-  if (existingBookmark) {
-    await existingBookmark.deleteOne();
-  }
+  const deleteResult = await Bookmark.deleteOne({ user: userId, post: postId });
+  const removed = Number(deleteResult?.deletedCount || 0) > 0;
 
   res.status(200).json({
     success: true,
-    message: 'Bookmark removed',
+    message: removed ? 'Bookmark removed' : 'Post already unbookmarked',
     data: {
       bookmarked: false,
-      isBookmarked: false
+      isBookmarked: false,
+      action: removed ? 'unbookmarked' : 'already_unbookmarked'
     }
   });
 });
@@ -883,24 +1090,43 @@ exports.removeRepost = catchAsync(async (req, res, next) => {
   const { postId } = req.params;
   const userId = req.user._id;
 
+  const originalPost = await Post.findById(postId);
+  if (!originalPost || originalPost.status === 'deleted') {
+    return next(new AppError('Post not found', 404));
+  }
+
   const repost = await Post.findOne({
     author: userId,
     originalPost: postId,
-    postType: { $in: ['repost', 'quote'] },
+    postType: { $in: REPOST_TYPES },
     status: 'active'
   });
 
   if (!repost) {
-    return next(new AppError('You have not reposted this post', 404));
+    const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
+    realtimeEvents.emit('post.reposted', {
+      postId,
+      repostsCount: updatedOriginalPost?.engagement?.reposts || 0,
+      userId,
+      reposted: false
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: 'Post already unreposted',
+      data: {
+        reposted: false,
+        isReposted: false,
+        postId,
+        repostsCount: updatedOriginalPost?.engagement?.reposts || 0,
+        action: 'already_unreposted'
+      }
+    });
   }
 
   repost.status = 'deleted';
   await repost.save({ validateBeforeSave: false });
-
-  await Post.findByIdAndUpdate(postId, {
-    $inc: { 'engagement.reposts': -1 }
-  });
-  const updatedOriginalPost = await Post.findById(postId).select('engagement.reposts');
+  const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
 
   realtimeEvents.emit('post.reposted', {
     postId,
@@ -916,7 +1142,8 @@ exports.removeRepost = catchAsync(async (req, res, next) => {
       reposted: false,
       isReposted: false,
       postId,
-      repostsCount: updatedOriginalPost?.engagement?.reposts || 0
+      repostsCount: updatedOriginalPost?.engagement?.reposts || 0,
+      action: 'unreposted'
     }
   });
 });

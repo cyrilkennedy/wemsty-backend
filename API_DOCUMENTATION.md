@@ -468,15 +468,17 @@ Valid statuses: `active`, `suspended`, `banned`
 | GET | `/posts/feed/home` | Private | Following-based home feed |
 | GET | `/posts/feed/sphere` | Private | Authenticated discovery feed |
 | POST | `/posts` | Private | Create post |
-| POST | `/posts/repost` | Private | Repost, quote repost, or toggle off existing repost |
+| POST | `/posts/repost` | Private | Create repost or quote repost (idempotent create) |
 | DELETE | `/posts/repost/:postId` | Private | Explicitly remove repost/quote repost |
 | POST | `/posts/reply` | Private | Reply to post |
 | PATCH | `/posts/reply/:replyId` | Private | Edit own comment (reply) |
 | DELETE | `/posts/reply/:replyId` | Private | Delete own comment (reply) |
-| POST | `/posts/:postId/like` | Private | Toggle like |
+| POST | `/posts/reply/:replyId/like` | Private | Like a comment/reply (idempotent) |
+| DELETE | `/posts/reply/:replyId/like` | Private | Unlike a comment/reply (idempotent) |
+| POST | `/posts/:postId/like` | Private | Like a post (idempotent) |
 | DELETE | `/posts/:postId/like` | Private | Explicit unlike (idempotent) |
 | GET | `/posts/:postId/likes` | Private | List post likes |
-| POST | `/posts/:postId/bookmark` | Private | Toggle bookmark |
+| POST | `/posts/:postId/bookmark` | Private | Bookmark post (idempotent) |
 | DELETE | `/posts/:postId/bookmark` | Private | Explicit unbookmark (idempotent) |
 | GET | `/posts/bookmarks/me` | Private | List own bookmarks |
 | DELETE | `/posts/:postId` | Private | Delete own post |
@@ -522,8 +524,9 @@ Repost payload:
 
 Repost behavior:
 - If no active repost exists, this creates one.
-- If an active repost exists and `text` is empty/missing, it removes the repost.
-- If an active repost exists and `text` is provided, it updates it to a quote repost.
+- If an active repost exists and `text` is provided, it updates the existing repost into a quote repost.
+- If an active repost exists and `text` is empty/missing, the API returns "already reposted".
+- To remove repost, use `DELETE /posts/repost/:postId`.
 
 Reply payload:
 
@@ -545,9 +548,11 @@ Edit comment payload (`PATCH /posts/reply/:replyId`):
 Interaction summary:
 - Like: `POST /posts/:postId/like`
 - Unlike: `DELETE /posts/:postId/like`
+- Like comment: `POST /posts/reply/:replyId/like`
+- Unlike comment: `DELETE /posts/reply/:replyId/like`
 - Bookmark: `POST /posts/:postId/bookmark`
 - Unbookmark: `DELETE /posts/:postId/bookmark`
-- Repost/quote/toggle: `POST /posts/repost`
+- Repost/quote create: `POST /posts/repost`
 - Explicit unrepost: `DELETE /posts/repost/:postId`
 
 ---
@@ -944,10 +949,14 @@ const socket = io('http://localhost:3001/realtime', {
 | `presence.updated` | `{ userId, status, at }` | Presence state changed |
 | `channel.typing.updated` | `{ channelId, userIds }` | Channel typing users updated |
 | `post.created` | `{ post }` | New post published |
-| `post:liked` | `{ postId, likesCount, userId }` | Backward-compatible like update event |
-| `post.liked.updated` | `{ postId, likesCount, userId }` | Primary like update event |
+| `post:liked` | `{ postId, likesCount, userId, liked, isLiked }` | Backward-compatible like update event |
+| `post.liked.updated` | `{ postId, likesCount, userId, liked, isLiked }` | Primary like update event |
 | `post:reposted` | `{ postId, repostsCount, userId, reposted }` | Backward-compatible repost update event |
 | `post.reposted.updated` | `{ postId, repostsCount, userId, reposted }` | Primary repost update event |
+
+Realtime handling tip:
+- Always update counts (`likesCount`, `repostsCount`) for everyone.
+- Only update the current user's local button state from socket when `payload.userId === currentUserId`.
 
 Ack pattern:
 - Most client-emitted events support callback ack.
@@ -1064,12 +1073,28 @@ Some list endpoints support sorting. Use endpoint-specific `sort` values where p
 ### CORS
 In development, CORS allows all origins. Restrict allowed origins in production configuration.
 
+### Kafka (Event Streaming)
+Kafka is used for asynchronous background events (post activity, search indexing, notifications).
+
+Production env vars:
+- `KAFKA_BROKERS` (comma-separated, e.g. `broker1:9092,broker2:9092`)
+- `KAFKA_CLIENT_ID` (optional, default: `wemsty-backend`)
+- `KAFKA_PARTITIONS` (optional, default: `3`)
+- `KAFKA_REPLICATION` (optional, default: `1`)
+
+Runtime behavior:
+- Backend tries to connect to Kafka at startup.
+- If Kafka is unavailable, API still runs (fail-open), but events are not streamed.
+- You should see `Kafka: Connected` in logs when healthy.
+
 ### Common Beginner Issues
 - `401 Unauthorized`: Access token missing, expired, or wrong token type.
 - `400 Invalid updates`: You sent disallowed fields in `PATCH /users/profile`.
 - `403 Forbidden`: Account status/role does not allow the action.
 - `404 Not Found`: Route is correct but resource id/username does not exist.
 - `429 Too Many Requests`: Wait for `retryAfter` and retry later.
+- `Post already liked/reposted/bookmarked`: this is expected for idempotent `POST` interaction endpoints.
+- `Post already unliked/unreposted/unbookmarked`: this is expected for idempotent `DELETE` interaction endpoints.
 
 ---
 

@@ -231,6 +231,17 @@ const PostSchema = new mongoose.Schema({
 // ════════════════════════════════════════════════
 PostSchema.index({ author: 1, createdAt: -1 });
 PostSchema.index({ originalPost: 1, createdAt: -1 });
+PostSchema.index(
+  { author: 1, originalPost: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      postType: { $in: ['repost', 'quote'] },
+      status: 'active',
+      originalPost: { $exists: true }
+    }
+  }
+);
 PostSchema.index({ parentPost: 1, createdAt: -1 });
 PostSchema.index({ category: 1, visibility: 1, status: 1, createdAt: -1 });
 PostSchema.index({ 'content.hashtags': 1, createdAt: -1 });

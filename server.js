@@ -13,6 +13,7 @@ const rateLimit = require('express-rate-limit');
 // Import configs & middlewares
 const connectDB = require('./config/mongodb');
 const redisManager = require('./config/redis');
+const { kafkaManager, DEFAULT_TOPICS } = require('./config/kafka');
 const errorMiddleware = require('./middlewares/error.middleware');
 const { initializeRealtime } = require('./services/realtime.service');
 
@@ -186,6 +187,16 @@ async function startServer() {
       console.warn('Redis: Unavailable, continuing without cache acceleration');
       console.warn(redisError.message);
     }
+
+    // Connect to Kafka for async events (fail-open if unavailable)
+    try {
+      await kafkaManager.connect();
+      await kafkaManager.createTopics(DEFAULT_TOPICS);
+      console.log('Kafka: Connected');
+    } catch (kafkaError) {
+      console.warn('Kafka: Unavailable, continuing without event streaming');
+      console.warn(kafkaError.message);
+    }
     
     // Create HTTP server
     const httpServer = http.createServer(app);
@@ -247,11 +258,13 @@ process.on('SIGTERM', () => {
   if (server) {
     server.close(() => {
       redisManager.close().catch(() => {});
+      kafkaManager.disconnect().catch(() => {});
       console.log('Process terminated');
       process.exit(0);
     });
   } else {
     redisManager.close().catch(() => {});
+    kafkaManager.disconnect().catch(() => {});
     process.exit(0);
   }
 });

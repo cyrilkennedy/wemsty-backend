@@ -183,11 +183,13 @@ function initializeRealtime(httpServer) {
     namespace.emit('post.created', { post });
   });
 
-  realtimeEvents.on('post.liked', ({ postId, likesCount, userId }) => {
+  realtimeEvents.on('post.liked', ({ postId, likesCount, userId, liked }) => {
     const payload = {
       postId,
       likesCount,
-      userId
+      userId,
+      liked: !!liked,
+      isLiked: !!liked
     };
 
     // Room-targeted updates (if clients joined post room)
