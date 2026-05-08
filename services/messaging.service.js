@@ -10,7 +10,7 @@ const User = require('../models/User.model');
 const AppError = require('../utils/AppError');
 const {
   createNotification,
-  createMentionNotifications,
+  queueFanoutMentionNotification,
   extractMentionUsernames
 } = require('./notification.service');
 const { writeAuditLog } = require('./audit.service');
@@ -182,7 +182,7 @@ async function sendChannelMessage({ circleId = null, channelId, user, bodyText, 
   await Circle.findByIdAndUpdate(circle._id, { $set: { lastActivityAt: new Date() } });
   await incrementUnreadForChannel(circle._id, channel._id, user._id);
 
-  await createMentionNotifications({
+  await queueFanoutMentionNotification({
     text: normalizedBody,
     actor: user._id,
     type: 'channel_mention',

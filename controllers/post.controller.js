@@ -17,7 +17,9 @@ const {
 } = require('../config/post-categories');
 const {
   createNotification,
-  createMentionNotifications
+  createMentionNotifications,
+  queueFanoutPostNotification,
+  queueFanoutMentionNotification
 } = require('../services/notification.service');
 const { kafkaManager } = require('../config/kafka');
 const realtimeEvents = require('../services/realtime-events.service');
@@ -341,12 +343,22 @@ exports.createPost = catchAsync(async (req, res, next) => {
   await post.populate('author', 'username profile.displayName profile.avatar');
 
   if (text) {
-    await createMentionNotifications({
+    await queueFanoutMentionNotification({
       text,
       actor: userId,
       type: 'mention',
       objectType: 'post',
       objectId: post._id
+    });
+  }
+
+  if (post.visibility === 'public') {
+    await queueFanoutPostNotification({
+      actor: userId,
+      type: 'post_created',
+      objectType: 'post',
+      objectId: post._id,
+      previewText: text || ''
     });
   }
 
@@ -1400,6 +1412,7 @@ exports.deletePost = catchAsync(async (req, res, next) => {
   // Soft delete
   post.status = 'deleted';
   await post.save();
+  await algoliaService.deletePost(post._id);
 
   if (FEED_VISIBLE_POST_TYPES.includes(post.postType)) {
     await syncUserThoughtsCount(post.author);

@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { sanitizeExternalUrl } = require('../utils/url-sanitizer');
+const { hashToken } = require('../utils/token-hash.util');
 
 const UserSchema = new mongoose.Schema({
   // ────────────────────────────────────────────────
@@ -149,13 +150,19 @@ const UserSchema = new mongoose.Schema({
   // METADATA
   // ────────────────────────────────────────────────
   refreshTokens: [{
-    token: String,
+    tokenHash: {
+      type: String,
+      index: true
+    },
     createdAt: {
       type: Date,
       default: Date.now
     },
     expiresAt: Date,
-    deviceInfo: String
+    deviceInfo: String,
+    ipAddress: String,
+    lastUsedAt: Date,
+    revokedAt: Date
   }]
 
 }, {
@@ -200,6 +207,23 @@ UserSchema.pre('save', async function() {
   if (!this.isNew) {
     this.passwordChangedAt = Date.now() - 1000; // 1 second ago to ensure tokens are valid
   }
+});
+
+UserSchema.pre('save', function() {
+  if (!Array.isArray(this.refreshTokens)) {
+    return;
+  }
+
+  this.refreshTokens = this.refreshTokens
+    .map((session) => {
+      if (!session.tokenHash && session.token) {
+        session.tokenHash = hashToken(session.token);
+      }
+
+      session.token = undefined;
+      return session;
+    })
+    .filter((session) => Boolean(session.tokenHash));
 });
 
 // ════════════════════════════════════════════════

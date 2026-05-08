@@ -1,8 +1,10 @@
 const { Server } = require('socket.io');
+const { createAdapter } = require('@socket.io/redis-adapter');
 
 const CircleMembership = require('../models/CircleMembership.model');
 const DMConversation = require('../models/DMConversation.model');
 const Notification = require('../models/Notification.model');
+const redisManager = require('../config/redis');
 const realtimeEvents = require('./realtime-events.service');
 const { authenticateSocketToken } = require('./socket-auth.service');
 const {
@@ -137,7 +139,7 @@ function formatSocketError(error) {
   };
 }
 
-function initializeRealtime(httpServer) {
+async function initializeRealtime(httpServer) {
   if (ioInstance) {
     return ioInstance;
   }
@@ -148,6 +150,18 @@ function initializeRealtime(httpServer) {
       credentials: true
     }
   });
+
+  if (redisManager.isConnected && redisManager.client) {
+    try {
+      const pubClient = redisManager.client.duplicate();
+      const subClient = redisManager.client.duplicate();
+      await Promise.all([pubClient.connect(), subClient.connect()]);
+      ioInstance.adapter(createAdapter(pubClient, subClient));
+      console.log('Socket.IO Redis adapter enabled');
+    } catch (error) {
+      console.warn('Socket.IO Redis adapter unavailable:', error.message);
+    }
+  }
 
   const namespace = ioInstance.of('/realtime');
 
@@ -230,6 +244,7 @@ function initializeRealtime(httpServer) {
 
     if (!userPresence.has(userId) || userPresence.get(userId) !== 'online') {
       userPresence.set(userId, 'online');
+      await redisManager.setUserOnline(userId, 'online');
       await broadcastPresence(namespace, userId, 'online');
     }
 
@@ -385,6 +400,11 @@ function initializeRealtime(httpServer) {
         : 'online';
 
       userPresence.set(userId, nextStatus);
+      if (nextStatus === 'offline') {
+        await redisManager.setUserOffline(userId);
+      } else {
+        await redisManager.setUserOnline(userId, nextStatus);
+      }
       await broadcastPresence(namespace, userId, nextStatus);
       ack({ ok: true, status: nextStatus });
     });
@@ -394,6 +414,7 @@ function initializeRealtime(httpServer) {
       if (nextCount === 0) {
         userSocketCounts.delete(userId);
         userPresence.set(userId, 'offline');
+        await redisManager.setUserOffline(userId);
         await broadcastPresence(namespace, userId, 'offline');
       } else {
         userSocketCounts.set(userId, nextCount);

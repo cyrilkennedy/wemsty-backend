@@ -6,6 +6,7 @@ const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
+const { hashToken } = require('../utils/token-hash.util');
 
 const OTP = require('../models/OTP.model');
 const PasswordResetFeedback = require('../models/PasswordResetFeedback.model');
@@ -13,6 +14,8 @@ const { sendOTPEmail, sendPasswordResetSuccessEmail } = require('../utils/emailS
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const FEED_VISIBLE_POST_TYPES = ['original', 'quote'];
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_REFRESH_SESSIONS = 5;
 
 async function toSafeUserWithLiveThoughtCount(user) {
   const safeUser = user.toSafeObject();
@@ -30,22 +33,34 @@ async function toSafeUserWithLiveThoughtCount(user) {
 // HELPER FUNCTIONS
 // ════════════════════════════════════════════════
 
+function createRefreshSession(refreshToken, req) {
+  return {
+    tokenHash: hashToken(refreshToken),
+    expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_MS),
+    deviceInfo: req?.headers?.['user-agent'],
+    ipAddress: req?.ip,
+    lastUsedAt: new Date()
+  };
+}
+
+function pruneRefreshSessions(user) {
+  const now = new Date();
+  user.refreshTokens = (user.refreshTokens || [])
+    .filter((session) => {
+      const isUsable = session.tokenHash && !session.revokedAt;
+      const isUnexpired = !session.expiresAt || session.expiresAt > now;
+      return isUsable && isUnexpired;
+    })
+    .slice(-MAX_REFRESH_SESSIONS);
+}
+
 const createAndSendTokens = async (user, statusCode, res, message = 'Success') => {
   // Generate tokens
   const accessToken = user.generateAccessToken();
   const refreshToken = user.generateRefreshToken();
 
-  // Save refresh token to database
-  user.refreshTokens.push({
-    token: refreshToken,
-    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-    deviceInfo: res.req.headers['user-agent']
-  });
-
-  // Limit refresh tokens to 5 per user (keep only most recent)
-  if (user.refreshTokens.length > 5) {
-    user.refreshTokens = user.refreshTokens.slice(-5);
-  }
+  user.refreshTokens.push(createRefreshSession(refreshToken, res.req));
+  pruneRefreshSessions(user);
 
   await user.save({ validateBeforeSave: false });
 
@@ -272,19 +287,19 @@ exports.refreshToken = catchAsync(async (req, res, next) => {
   const user = req.user;
   const oldRefreshToken = req.refreshToken;
 
-  // Remove old refresh token
-  user.refreshTokens = user.refreshTokens.filter(rt => rt.token !== oldRefreshToken);
+  const oldRefreshTokenHash = req.refreshTokenHash || hashToken(oldRefreshToken);
+  user.refreshTokens = user.refreshTokens.filter((session) => {
+    const isSameSession = session._id?.toString() === req.refreshSessionId;
+    const isSameToken = session.tokenHash === oldRefreshTokenHash;
+    return !isSameSession && !isSameToken;
+  });
 
   // Generate new tokens
   const accessToken = user.generateAccessToken();
   const refreshToken = user.generateRefreshToken();
 
-  // Save new refresh token
-  user.refreshTokens.push({
-    token: refreshToken,
-    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-    deviceInfo: req.headers['user-agent']
-  });
+  user.refreshTokens.push(createRefreshSession(refreshToken, req));
+  pruneRefreshSessions(user);
 
   await user.save({ validateBeforeSave: false });
 
@@ -324,8 +339,8 @@ exports.logout = catchAsync(async (req, res, next) => {
   const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
 
   if (refreshToken) {
-    // Remove specific refresh token
-    user.refreshTokens = user.refreshTokens.filter(rt => rt.token !== refreshToken);
+    const refreshTokenHash = hashToken(refreshToken);
+    user.refreshTokens = user.refreshTokens.filter((session) => session.tokenHash !== refreshTokenHash);
     await user.save({ validateBeforeSave: false });
   }
 
@@ -772,5 +787,43 @@ exports.resendPasswordResetOTP = catchAsync(async (req, res, next) => {
   res.status(200).json({
     status: 'success',
     message: 'A new verification code has been sent to your email.'
+  });
+});
+
+exports.getSessions = catchAsync(async (req, res) => {
+  const user = await User.findById(req.user._id).select('refreshTokens');
+  const now = new Date();
+  const sessions = (user.refreshTokens || []).map((session) => ({
+    id: session._id?.toString(),
+    deviceInfo: session.deviceInfo,
+    ipAddress: session.ipAddress,
+    createdAt: session.createdAt,
+    expiresAt: session.expiresAt,
+    lastUsedAt: session.lastUsedAt,
+    revokedAt: session.revokedAt,
+    active: !session.revokedAt && (!session.expiresAt || session.expiresAt > now)
+  }));
+
+  res.status(200).json({
+    success: true,
+    message: 'Sessions fetched successfully',
+    data: { sessions }
+  });
+});
+
+exports.revokeSession = catchAsync(async (req, res, next) => {
+  const user = await User.findById(req.user._id).select('refreshTokens');
+  const session = user.refreshTokens.id(req.params.sessionId);
+
+  if (!session) {
+    return next(new AppError('Session not found', 404));
+  }
+
+  session.revokedAt = new Date();
+  await user.save({ validateBeforeSave: false });
+
+  res.status(200).json({
+    success: true,
+    message: 'Session revoked successfully'
   });
 });

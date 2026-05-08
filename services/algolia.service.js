@@ -1,6 +1,25 @@
 // services/algolia.service.js - Algolia search integration service
 
 const { algoliasearch } = require('algoliasearch');
+const { searchIndexQueue } = require('../queues');
+const { addJob, queuesEnabled } = require('./queue.service');
+
+function isPublicSearchablePost(post = {}) {
+  return (
+    post.status !== 'deleted' &&
+    post.status !== 'hidden' &&
+    post.status !== 'shadow_hidden' &&
+    (post.status || 'active') === 'active' &&
+    post.visibility === 'public'
+  );
+}
+
+function shouldDeletePostUpdate(updates = {}) {
+  return (
+    ['deleted', 'hidden', 'shadow_hidden'].includes(updates.status) ||
+    (updates.visibility && updates.visibility !== 'public')
+  );
+}
 
 class AlgoliaService {
   constructor() {
@@ -32,6 +51,21 @@ class AlgoliaService {
    * Index or update a post
    */
   async savePost(post) {
+    if (!isPublicSearchablePost(post)) {
+      await this.deletePost(post._id);
+      return;
+    }
+
+    if (queuesEnabled() && process.env.WORKER_PROCESS !== 'true') {
+      await addJob(searchIndexQueue, 'index-entity', {
+        action: 'save',
+        entityType: 'post',
+        entityId: post._id?.toString(),
+        payload: post
+      });
+      return;
+    }
+
     if (!this.client) return;
 
     try {
@@ -68,6 +102,21 @@ class AlgoliaService {
    * Update post ranking/engagement in Algolia
    */
   async updatePost(postId, updates) {
+    if (shouldDeletePostUpdate(updates)) {
+      await this.deletePost(postId);
+      return;
+    }
+
+    if (queuesEnabled() && process.env.WORKER_PROCESS !== 'true') {
+      await addJob(searchIndexQueue, 'index-entity', {
+        action: 'update',
+        entityType: 'post',
+        entityId: postId.toString(),
+        payload: updates
+      });
+      return;
+    }
+
     if (!this.client) return;
 
     try {
@@ -85,6 +134,15 @@ class AlgoliaService {
    * Remove post from index
    */
   async deletePost(postId) {
+    if (queuesEnabled() && process.env.WORKER_PROCESS !== 'true') {
+      await addJob(searchIndexQueue, 'index-entity', {
+        action: 'delete',
+        entityType: 'post',
+        entityId: postId.toString()
+      });
+      return;
+    }
+
     if (!this.client) return;
 
     try {
@@ -101,6 +159,16 @@ class AlgoliaService {
    * Index or update a user profile
    */
   async saveUser(user) {
+    if (queuesEnabled() && process.env.WORKER_PROCESS !== 'true') {
+      await addJob(searchIndexQueue, 'index-entity', {
+        action: 'save',
+        entityType: 'user',
+        entityId: user._id?.toString(),
+        payload: user
+      });
+      return;
+    }
+
     if (!this.client) return;
 
     try {
@@ -129,6 +197,16 @@ class AlgoliaService {
    * Index or update a Circle (Community)
    */
   async saveCircle(circle) {
+    if (queuesEnabled() && process.env.WORKER_PROCESS !== 'true') {
+      await addJob(searchIndexQueue, 'index-entity', {
+        action: 'save',
+        entityType: 'circle',
+        entityId: circle._id?.toString(),
+        payload: circle
+      });
+      return;
+    }
+
     if (!this.client) return;
 
     try {

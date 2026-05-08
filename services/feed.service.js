@@ -708,6 +708,99 @@ class FeedService {
       console.error('Error updating post engagement:', error.message);
     }
   }
+
+  async refreshTrendingScores(options = {}) {
+    const {
+      days = 7,
+      batchSize = 100,
+      now = new Date()
+    } = options;
+    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    let processed = 0;
+    let updated = 0;
+    let cursor = null;
+
+    while (true) {
+      const query = {
+        status: 'active',
+        visibility: 'public',
+        sphereEligible: true,
+        postType: { $in: ['original', 'quote'] },
+        updatedAt: { $gte: cutoff }
+      };
+
+      if (cursor) {
+        query._id = { $gt: cursor };
+      }
+
+      const posts = await Post.find(query)
+        .sort({ _id: 1 })
+        .limit(batchSize);
+
+      if (posts.length === 0) {
+        break;
+      }
+
+      for (const post of posts) {
+        const oldSphereScore = post.sphereScore || 0;
+        const oldEngagementScore = post.engagement?.score || 0;
+        const oldVelocity = post.engagement?.velocity || 0;
+        const { likes = 0, comments = 0, reposts = 0 } = post.engagement || {};
+        const ageHours = Math.max((now - post.createdAt) / (1000 * 60 * 60), 1 / 60);
+
+        post.engagement.score = (likes * 1) + (comments * 2) + (reposts * 3);
+        post.engagement.velocity = (likes + comments + reposts) / ageHours;
+        post.calculateSphereScore();
+
+        if (
+          post.sphereScore !== oldSphereScore ||
+          post.engagement.score !== oldEngagementScore ||
+          post.engagement.velocity !== oldVelocity
+        ) {
+          await post.save({ validateBeforeSave: false });
+          updated += 1;
+        }
+
+        processed += 1;
+      }
+
+      cursor = posts[posts.length - 1]._id;
+    }
+
+    return { processed, updated, cutoff };
+  }
+
+  async refreshHotFeedCache(options = {}) {
+    const {
+      page = 1,
+      limit = 20,
+      modes = ['top', 'latest']
+    } = options;
+    const results = [];
+
+    for (const mode of modes) {
+      const candidates = await this.getCandidatesForDiscovery(null, [], limit * 3, mode);
+      const scoredPosts = mode === 'latest'
+        ? candidates
+        : await this.scoreAndRankCandidates(candidates, null, {});
+      const hydratedPosts = await this.hydratePosts(scoredPosts.slice(0, limit), null);
+      const payload = {
+        items: hydratedPosts,
+        pagination: {
+          page,
+          limit,
+          total: scoredPosts.length,
+          pages: Math.ceil(scoredPosts.length / limit),
+          hasMore: scoredPosts.length > limit
+        }
+      };
+
+      await this.cacheSphereFeed('guest', payload, page, limit, mode);
+      results.push({ mode, cached: payload.items.length });
+    }
+
+    return { results };
+  }
 }
 
 module.exports = new FeedService();

@@ -191,7 +191,9 @@ router.post(
 
 
 
-router.get('/test', (req, res) => res.json({ message: 'Auth routes working' }));
+if (process.env.NODE_ENV !== 'production') {
+  router.get('/test', (req, res) => res.json({ success: true, message: 'Auth routes working' }));
+}
 
 
 
@@ -307,6 +309,18 @@ router.post(
   '/logout-all',
   authMiddleware.protect,
   authController.logoutAll
+);
+
+router.get(
+  '/sessions',
+  authMiddleware.protect,
+  authController.getSessions
+);
+
+router.delete(
+  '/sessions/:sessionId',
+  authMiddleware.protect,
+  authController.revokeSession
 );
 
 /**

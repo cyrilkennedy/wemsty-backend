@@ -8,7 +8,10 @@ const CircleInvite = require('../models/CircleInvite.model');
 const Post = require('../models/Post.model');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
-const { createNotification } = require('../services/notification.service');
+const {
+  createNotification,
+  queueFanoutCircleNotification
+} = require('../services/notification.service');
 const { hasPermission, resolvePermissions } = require('../services/circle-permissions.service');
 const { writeAuditLog } = require('../services/audit.service');
 
@@ -432,6 +435,16 @@ exports.createChannel = catchAsync(async (req, res, next) => {
     payload: { circleId, name: channel.name, visibility: channel.visibility }
   });
 
+  await queueFanoutCircleNotification({
+    actor: req.user._id,
+    type: 'circle_activity',
+    objectType: 'channel',
+    objectId: channel._id,
+    circle: circleId,
+    channel: channel._id,
+    previewText: `${req.user.username} created #${channel.name}`
+  });
+
   res.status(201).json({
     success: true,
     message: 'Channel created successfully',
@@ -631,6 +644,15 @@ exports.createInvite = catchAsync(async (req, res, next) => {
     objectType: 'circle_invite',
     objectId: invite._id,
     payload: { circleId, code: invite.code, maxUses: invite.maxUses, expiresAt: invite.expiresAt }
+  });
+
+  await queueFanoutCircleNotification({
+    actor: req.user._id,
+    type: 'invite',
+    objectType: 'circle_invite',
+    objectId: invite._id,
+    circle: circleId,
+    previewText: `${req.user.username} created a circle invite`
   });
 
   res.status(201).json({

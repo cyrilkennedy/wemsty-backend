@@ -1,5 +1,17 @@
 // middlewares/error.middleware.js
 
+const { captureException } = require('../config/sentry');
+
+function toErrorCode(message = '', statusCode = 500) {
+  if (statusCode === 400) return 'BAD_REQUEST';
+  if (statusCode === 401) return 'UNAUTHORIZED';
+  if (statusCode === 403) return 'FORBIDDEN';
+  if (statusCode === 404) return 'NOT_FOUND';
+  if (statusCode === 409) return 'CONFLICT';
+  if (statusCode === 429) return 'RATE_LIMITED';
+  return statusCode >= 500 ? 'INTERNAL_SERVER_ERROR' : message.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+}
+
 module.exports = (err, req, res, next) => {
   let error = { ...err };
   error.message = err.message;
@@ -44,12 +56,25 @@ module.exports = (err, req, res, next) => {
 
   // Default to 500 if no status code
   const statusCode = error.statusCode || 500;
-  const message = error.message || 'Internal Server Error';
+  const message = process.env.NODE_ENV === 'production' && statusCode >= 500
+    ? 'Something went wrong'
+    : error.message || 'Internal Server Error';
+
+  if (statusCode >= 500) {
+    captureException(err, {
+      requestId: req.id,
+      path: req.originalUrl,
+      method: req.method,
+      userId: req.user?._id?.toString()
+    });
+  }
 
   // Build response
   const response = {
-    status: statusCode >= 500 ? 'error' : 'fail',
-    message
+    success: false,
+    message,
+    code: toErrorCode(error.message, statusCode),
+    errors: []
   };
 
   // Add stack in development

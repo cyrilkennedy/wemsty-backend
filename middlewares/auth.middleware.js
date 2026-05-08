@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User.model');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
+const { hashToken, matchesTokenHash } = require('../utils/token-hash.util');
 
 // ════════════════════════════════════════════════
 // PROTECT ROUTES - REQUIRE AUTHENTICATION
@@ -221,13 +222,25 @@ exports.verifyRefreshToken = catchAsync(async (req, res, next) => {
     return next(new AppError('This session has been invalidated. Please log in again.', 401));
   }
 
-  // Check if token exists in user's refresh tokens
-  const tokenExists = user.refreshTokens.some(rt => rt.token === token);
-  if (!tokenExists) {
+  const tokenHash = hashToken(token);
+  const now = new Date();
+  const refreshSession = user.refreshTokens.find((session) => (
+    session.tokenHash &&
+    matchesTokenHash(token, session.tokenHash) &&
+    !session.revokedAt &&
+    (!session.expiresAt || session.expiresAt > now)
+  ));
+
+  if (!refreshSession) {
     return next(new AppError('Invalid refresh token.', 401));
   }
 
+  refreshSession.lastUsedAt = new Date();
+  await user.save({ validateBeforeSave: false });
+
   req.user = user;
   req.refreshToken = token;
+  req.refreshTokenHash = tokenHash;
+  req.refreshSessionId = refreshSession._id?.toString();
   next();
 });

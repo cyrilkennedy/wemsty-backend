@@ -1,8 +1,14 @@
 // services/payment.service.js - Paystack payment integration service
 
-const paystack = require('paystack')(process.env.PAYSTACK_SECRET_KEY);
+const PaymentTransaction = require('../models/PaymentTransaction.model');
+const PaymentWebhookEvent = require('../models/PaymentWebhookEvent.model');
+const { createPaystackClient } = require('./paystack-client.service');
 
 class PaymentService {
+  constructor(paystackClient = createPaystackClient()) {
+    this.paystackClient = paystackClient;
+  }
+
   /**
    * Initialize a transaction
    * @param {string} email - Customer email
@@ -14,20 +20,35 @@ class PaymentService {
       // Paystack expects amount in kobo
       const amountInKobo = amount * 100;
 
-      const response = await new Promise((resolve, reject) => {
-        paystack.transaction.initialize({
-          email,
-          amount: amountInKobo,
-          metadata
-        }, (error, body) => {
-          if (error) return reject(error);
-          resolve(body);
-        });
+      const response = await this.paystackClient.initializeTransaction({
+        email,
+        amount: amountInKobo,
+        metadata
       });
 
       if (!response.status) {
         throw new Error(response.message || 'Failed to initialize Paystack transaction');
       }
+
+      await PaymentTransaction.findOneAndUpdate(
+        { reference: response.data.reference },
+        {
+          $setOnInsert: {
+            provider: 'paystack',
+            reference: response.data.reference,
+            user: metadata.userId || undefined,
+            email,
+            amount: amountInKobo,
+            currency: response.data.currency || 'NGN',
+            status: 'pending',
+            authorizationUrl: response.data.authorization_url,
+            accessCode: response.data.access_code,
+            metadata,
+            raw: response.data
+          }
+        },
+        { upsert: true, new: true }
+      );
 
       return response.data;
     } catch (error) {
@@ -42,16 +63,13 @@ class PaymentService {
    */
   async verifyTransaction(reference) {
     try {
-      const response = await new Promise((resolve, reject) => {
-        paystack.transaction.verify(reference, (error, body) => {
-          if (error) return reject(error);
-          resolve(body);
-        });
-      });
+      const response = await this.paystackClient.verifyTransaction(reference);
 
       if (!response.status) {
         throw new Error(response.message || 'Failed to verify Paystack transaction');
       }
+
+      await this.upsertTransactionFromPaystack(response.data);
 
       return response.data;
     } catch (error) {
@@ -65,12 +83,7 @@ class PaymentService {
    */
   async listTransactions(params = {}) {
     try {
-      const response = await new Promise((resolve, reject) => {
-        paystack.transaction.list(params, (error, body) => {
-          if (error) return reject(error);
-          resolve(body);
-        });
-      });
+      const response = await this.paystackClient.listTransactions(params);
 
       return response.data;
     } catch (error) {
@@ -84,12 +97,7 @@ class PaymentService {
    */
   async getCustomer(email) {
     try {
-      const response = await new Promise((resolve, reject) => {
-        paystack.customer.get(email, (error, body) => {
-          if (error) return reject(error);
-          resolve(body);
-        });
-      });
+      const response = await this.paystackClient.getCustomer(email);
 
       return response.data;
     } catch (error) {
@@ -113,7 +121,7 @@ class PaymentService {
    * Handle Paystack Webhook
    * @param {Object} payload - Webhook event body
    */
-  async handleWebhook(payload) {
+  async handleWebhook(payload, context = {}) {
     const event = payload.event;
     const data = payload.data;
 
@@ -121,7 +129,7 @@ class PaymentService {
 
     switch (event) {
       case 'charge.success':
-        await this.handleSuccessfulCharge(data);
+        await this.handleSuccessfulCharge(data, context);
         break;
       case 'transfer.success':
         await this.handleSuccessfulTransfer(data);
@@ -136,9 +144,76 @@ class PaymentService {
     return true;
   }
 
-  async handleSuccessfulCharge(data) {
+  async processWebhookEvent(webhookEventId) {
+    const webhookEvent = await PaymentWebhookEvent.findById(webhookEventId);
+    if (!webhookEvent) {
+      return null;
+    }
+
+    if (webhookEvent.status === 'processed') {
+      return webhookEvent;
+    }
+
+    webhookEvent.status = 'processing';
+    await webhookEvent.save();
+
+    try {
+      await this.handleWebhook(webhookEvent.payload, {
+        webhookEventId: webhookEvent._id
+      });
+      webhookEvent.status = 'processed';
+      webhookEvent.processedAt = new Date();
+      webhookEvent.errorMessage = undefined;
+      await webhookEvent.save();
+      return webhookEvent;
+    } catch (error) {
+      webhookEvent.status = 'failed';
+      webhookEvent.errorMessage = error.message;
+      await webhookEvent.save();
+      throw error;
+    }
+  }
+
+  async upsertTransactionFromPaystack(data, context = {}) {
+    if (!data?.reference) {
+      return null;
+    }
+
+    const metadata = data.metadata || {};
+    const status = data.status === 'success' ? 'success' : data.status || 'pending';
+
+    return PaymentTransaction.findOneAndUpdate(
+      { reference: data.reference },
+      {
+        $set: {
+          provider: 'paystack',
+          user: metadata.userId || undefined,
+          email: data.customer?.email,
+          amount: data.amount,
+          currency: data.currency || 'NGN',
+          status,
+          providerStatus: data.status,
+          metadata,
+          paidAt: data.paid_at ? new Date(data.paid_at) : undefined,
+          verifiedAt: new Date(),
+          lastWebhookEvent: context.webhookEventId || undefined,
+          webhookProcessedAt: context.webhookEventId ? new Date() : undefined,
+          raw: data
+        }
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+  }
+
+  async handleSuccessfulCharge(data, context = {}) {
     const { reference, amount, customer, metadata } = data;
     console.log(`✅ Payment successful: ${reference} for user ${metadata?.userId || customer.email}`);
+    const existingTransaction = await PaymentTransaction.findOne({ reference });
+    if (existingTransaction?.status === 'success') {
+      return existingTransaction;
+    }
+
+    return this.upsertTransactionFromPaystack(data, context);
     // Update user subscription, credit balance, or mark order as paid in DB
   }
 

@@ -89,6 +89,12 @@ router.get('/user/:username', authMiddleware.optionalAuth, postController.getUse
 // All routes below require authentication
 router.use(authMiddleware.protect);
 
+router.use('/feed', (req, res, next) => {
+  res.setHeader('Deprecation', 'true');
+  res.setHeader('Link', '</api/feed>; rel="successor-version"');
+  next();
+});
+
 /**
  * @route   GET /api/posts/feed/home
  * @desc    Get home feed (posts from following)

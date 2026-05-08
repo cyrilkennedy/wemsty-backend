@@ -1,6 +1,8 @@
 // utils/emailService.js
 
 const nodemailer = require('nodemailer');
+const { emailQueue } = require('../queues');
+const { addJob, queuesEnabled } = require('../services/queue.service');
 
 // ════════════════════════════════════════════════
 // EMAIL TRANSPORTER CONFIGURATION
@@ -14,9 +16,9 @@ const createTransporter = () => {
   }
 
   // For production: Use real SMTP (Gmail, SendGrid, etc.)
-  return nodemailer.createTransporter({
+  return nodemailer.createTransport({
     host: process.env.SMTP_HOST,
-    port: process.env.SMTP_PORT || 587,
+    port: Number(process.env.SMTP_PORT || 587),
     secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
     auth: {
       user: process.env.SMTP_USER,
@@ -136,7 +138,7 @@ const getPasswordResetSuccessTemplate = () => {
 // SEND EMAIL FUNCTIONS
 // ════════════════════════════════════════════════
 
-exports.sendOTPEmail = async (email, otp, purpose) => {
+async function sendOTPEmailNow(email, otp, purpose) {
   const transporter = createTransporter();
 
   const mailOptions = {
@@ -165,9 +167,9 @@ exports.sendOTPEmail = async (email, otp, purpose) => {
     console.error('❌ Email send error:', error);
     return { success: false, error: error.message };
   }
-};
+}
 
-exports.sendPasswordResetSuccessEmail = async (email) => {
+async function sendPasswordResetSuccessEmailNow(email) {
   const transporter = createTransporter();
 
   const mailOptions = {
@@ -189,4 +191,25 @@ exports.sendPasswordResetSuccessEmail = async (email) => {
     console.error('❌ Email send error:', error);
     return { success: false, error: error.message };
   }
+}
+
+exports.sendOTPEmailNow = sendOTPEmailNow;
+exports.sendPasswordResetSuccessEmailNow = sendPasswordResetSuccessEmailNow;
+
+exports.sendOTPEmail = async (email, otp, purpose) => {
+  if (queuesEnabled() && process.env.WORKER_PROCESS !== 'true') {
+    await addJob(emailQueue, 'otp', { email, otp, purpose });
+    return { success: true, queued: true, messageId: 'queued' };
+  }
+
+  return sendOTPEmailNow(email, otp, purpose);
+};
+
+exports.sendPasswordResetSuccessEmail = async (email) => {
+  if (queuesEnabled() && process.env.WORKER_PROCESS !== 'true') {
+    await addJob(emailQueue, 'password-reset-success', { email });
+    return { success: true, queued: true, messageId: 'queued' };
+  }
+
+  return sendPasswordResetSuccessEmailNow(email);
 };

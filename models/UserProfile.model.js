@@ -91,7 +91,6 @@ const UserProfileSchema = new mongoose.Schema({
 // ════════════════════════════════════════════════
 // INDEXES
 // ════════════════════════════════════════════════
-UserProfileSchema.index({ user: 1 });
 
 // ════════════════════════════════════════════════
 // METHODS

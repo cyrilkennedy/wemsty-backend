@@ -1,0 +1,91 @@
+services:
+  - type: keyvalue
+    name: wemsty-redis
+    plan: free
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+
+  - type: web
+    name: wemsty-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: API_VERSION
+        value: "4.0"
+      - key: TRUST_PROXY
+        value: "true"
+      - key: ENABLE_RATE_LIMITING
+        value: "true"
+      - key: ENABLE_QUEUES
+        value: "true"
+      - key: REQUIRE_REDIS
+        value: "true"
+      - key: QUEUE_JOB_ATTEMPTS
+        value: "3"
+      - key: QUEUE_BACKOFF_MS
+        value: "5000"
+      - key: QUEUE_DASHBOARD_TOKEN
+        sync: false
+      - key: ENABLE_SOCKET_LEGACY_EVENTS
+        value: "false"
+      - key: GLOBAL_RATE_LIMIT_MAX
+        value: "100"
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: wemsty-redis
+          property: connectionString
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      - key: JWT_EMAIL_SECRET
+        sync: false
+      - key: JWT_RESET_SECRET
+        sync: false
+      - key: JWT_ACCESS_EXPIRES
+        value: 15m
+      - key: JWT_REFRESH_EXPIRES
+        value: 7d
+      - key: SMTP_HOST
+        value: smtp-relay.brevo.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: ALGOLIA_APP_ID
+        sync: false
+      - key: ALGOLIA_ADMIN_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_TRACES_SAMPLE_RATE
+        value: "0"
+      - key: HEALTHCHECK_TOKEN
+        sync: false
