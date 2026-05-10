@@ -4,7 +4,18 @@ const { emailQueue } = require('../queues');
 const { addJob, queuesEnabled } = require('../services/queue.service');
 
 const Plunk = require('@plunk/node').default;
-const plunk = new Plunk(process.env.PLUNK_API_KEY || 'plunk_dummy_key');
+let plunkClient = null;
+
+const getPlunkClient = () => {
+  if (!plunkClient) {
+    const apiKey = (process.env.PLUNK_API_KEY || '').trim();
+    if (!apiKey || apiKey === 'plunk_dummy_key') {
+      return null;
+    }
+    plunkClient = new Plunk(apiKey);
+  }
+  return plunkClient;
+};
 
 // ════════════════════════════════════════════════
 // PLUNK API EMAIL SENDER
@@ -12,7 +23,12 @@ const plunk = new Plunk(process.env.PLUNK_API_KEY || 'plunk_dummy_key');
 
 const sendViaPlunk = async ({ to, subject, htmlContent }) => {
   try {
-    const success = await plunk.emails.send({
+    const client = getPlunkClient();
+    if (!client) {
+      throw new Error('Plunk client not initialized. Check PLUNK_API_KEY.');
+    }
+
+    const success = await client.emails.send({
       to,
       subject,
       body: htmlContent,
