@@ -46,9 +46,19 @@ function getAllowedOrigins() {
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+  const defaults = [
+    'https://wemsty.com',
+    'https://www.wemsty.com',
+    'https://localhost',
+    'http://localhost',
+    'capacitor://localhost'
+  ];
+
+  const origins = [...new Set([...defaults, ...configured])];
+
   if (process.env.NODE_ENV !== 'production') {
     return [
-      ...configured,
+      ...origins,
       'http://localhost:3000',
       'http://localhost:3001',
       'http://127.0.0.1:3000',
@@ -56,7 +66,7 @@ function getAllowedOrigins() {
     ];
   }
 
-  return configured;
+  return origins;
 }
 
 function configureApp() {
