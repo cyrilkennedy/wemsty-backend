@@ -9,6 +9,11 @@ class RedisManager {
   }
 
   async connect() {
+    if (!process.env.REDIS_URL && process.env.NODE_ENV === 'production') {
+      console.log('⚠️  No REDIS_URL provided. Redis features will be disabled.');
+      return null;
+    }
+
     try {
       const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
       

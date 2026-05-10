@@ -14,7 +14,9 @@ function makeDisabledQueue(name) {
 }
 
 function queue(name) {
-  if (process.env.ENABLE_QUEUES === 'false' || process.env.NODE_ENV === 'test') {
+  const isEnabled = process.env.ENABLE_QUEUES !== 'false' && (process.env.REDIS_URL || process.env.NODE_ENV !== 'production');
+  
+  if (!isEnabled || process.env.NODE_ENV === 'test') {
     return makeDisabledQueue(name);
   }
   return makeQueue(name);
