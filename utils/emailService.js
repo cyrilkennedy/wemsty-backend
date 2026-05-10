@@ -3,44 +3,51 @@
 const { emailQueue } = require('../queues');
 const { addJob, queuesEnabled } = require('../services/queue.service');
 
-const Plunk = require('@plunk/node').default;
-let plunkClient = null;
+const nodemailer = require('nodemailer');
 
-const getPlunkClient = () => {
-  if (!plunkClient) {
+let transporter = null;
+
+const getTransporter = () => {
+  if (!transporter) {
     const apiKey = (process.env.PLUNK_API_KEY || '').trim();
     if (!apiKey || apiKey === 'plunk_dummy_key') {
       return null;
     }
-    plunkClient = new Plunk(apiKey);
+
+    transporter = nodemailer.createTransport({
+      host: 'next-smtp.useplunk.com',
+      port: 2465,
+      secure: true, // Use SSL/TLS
+      auth: {
+        user: 'plunk',
+        pass: apiKey,
+      },
+    });
   }
-  return plunkClient;
+  return transporter;
 };
 
 // ════════════════════════════════════════════════
-// PLUNK API EMAIL SENDER
+// PLUNK SMTP EMAIL SENDER
 // ════════════════════════════════════════════════
 
 const sendViaPlunk = async ({ to, subject, htmlContent }) => {
   try {
-    const client = getPlunkClient();
-    if (!client) {
-      throw new Error('Plunk client not initialized. Check PLUNK_API_KEY.');
+    const mailTransporter = getTransporter();
+    if (!mailTransporter) {
+      throw new Error('Email transporter not initialized. Check PLUNK_API_KEY.');
     }
 
-    const success = await client.emails.send({
+    const info = await mailTransporter.sendMail({
+      from: process.env.SMTP_FROM || 'Wemsty Security <security@wemsty.com>',
       to,
       subject,
-      body: htmlContent,
+      html: htmlContent,
     });
-    
-    if (!success) {
-      throw new Error('Plunk API error: Failed to send email');
-    }
 
-    return success;
+    return info.messageId;
   } catch (error) {
-    throw new Error(`Plunk API error: ${error.message}`);
+    throw new Error(`Plunk SMTP error: ${error.message}`);
   }
 };
 
