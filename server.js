@@ -36,6 +36,7 @@ const notificationPrefRoutes = require('./routes/notification-preferences.routes
 const healthRoutes = require('./routes/health.routes');
 const mediaRoutes = require('./routes/media.routes');
 const queueRoutes = require('./routes/queue.routes');
+const mobileRoutes = require('./routes/mobile.routes');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -153,6 +154,7 @@ function configureApp() {
   app.use('/api/media', mediaRoutes);
   app.use('/api/queues', queueRoutes);
   app.use('/api/notifications/preferences', notificationPrefRoutes);
+  app.use('/api/mobile', mobileRoutes);
 
   app.get('/', (req, res) => {
     res.status(200).json({

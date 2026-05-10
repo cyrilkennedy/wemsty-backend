@@ -3,32 +3,29 @@
 const { emailQueue } = require('../queues');
 const { addJob, queuesEnabled } = require('../services/queue.service');
 
+const Plunk = require('@plunk/node').default;
+const plunk = new Plunk(process.env.PLUNK_API_KEY || 'plunk_dummy_key');
+
 // ════════════════════════════════════════════════
-// BREVO API EMAIL SENDER
+// PLUNK API EMAIL SENDER
 // ════════════════════════════════════════════════
 
-const sendViaBrevo = async ({ to, subject, htmlContent }) => {
-  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: {
-      'api-key': process.env.BREVO_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      sender: { name: 'Wemsty Security', email: process.env.SMTP_FROM || 'noreply@wemsty.com' },
-      to: [{ email: to }],
+const sendViaPlunk = async ({ to, subject, htmlContent }) => {
+  try {
+    const success = await plunk.emails.send({
+      to,
       subject,
-      htmlContent,
-    }),
-  });
+      body: htmlContent,
+    });
+    
+    if (!success) {
+      throw new Error('Plunk API error: Failed to send email');
+    }
 
-  if (!response.ok) {
-    const err = await response.json();
-    throw new Error(err.message || `Brevo API error: ${response.status}`);
+    return success;
+  } catch (error) {
+    throw new Error(`Plunk API error: ${error.message}`);
   }
-
-  const data = await response.json();
-  return data.messageId;
 };
 
 // ════════════════════════════════════════════════
@@ -144,22 +141,18 @@ const getPasswordResetSuccessTemplate = () => {
 
 async function sendOTPEmailNow(email, otp, purpose) {
   try {
-    if (!process.env.BREVO_API_KEY) {
-      // In production, this is a critical error
+    if (!process.env.PLUNK_API_KEY) {
       if (process.env.NODE_ENV === 'production') {
-        throw new Error('MISSING_BREVO_API_KEY: Emails cannot be sent. Add BREVO_API_KEY to Render environment variables.');
+        throw new Error('MISSING_PLUNK_API_KEY: Add it to Render environment variables.');
       }
-      
-      // Development mode - log to console
       console.log('\n📧 ===== EMAIL (Development Mode) =====');
       console.log(`To: ${email}`);
       console.log(`OTP Code: ${otp}`);
-      console.log(`Purpose: ${purpose}`);
       console.log('======================================\n');
       return { success: true, messageId: 'dev-mode' };
     }
 
-    const messageId = await sendViaBrevo({
+    const messageId = await sendViaPlunk({
       to: email,
       subject: `Your Wemsty Verification Code: ${otp}`,
       htmlContent: getOTPEmailTemplate(otp, purpose),
@@ -175,15 +168,14 @@ async function sendOTPEmailNow(email, otp, purpose) {
 
 async function sendPasswordResetSuccessEmailNow(email) {
   try {
-    if (!process.env.BREVO_API_KEY) {
+    if (!process.env.PLUNK_API_KEY) {
       if (process.env.NODE_ENV === 'production') {
-        throw new Error('MISSING_BREVO_API_KEY: Emails cannot be sent.');
+        throw new Error('MISSING_PLUNK_API_KEY');
       }
-      console.log('\n📧 Password reset success email (Dev Mode) sent to:', email);
       return { success: true, messageId: 'dev-mode' };
     }
 
-    const messageId = await sendViaBrevo({
+    const messageId = await sendViaPlunk({
       to: email,
       subject: 'Password Reset Successful - Wemsty',
       htmlContent: getPasswordResetSuccessTemplate(),
