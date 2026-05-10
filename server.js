@@ -1,5 +1,8 @@
 require('dotenv').config();
 
+const { initializeSentry } = require('./config/sentry');
+initializeSentry(); // Initialize Sentry as early as possible for full instrumentation
+
 const http = require('http');
 const express = require('express');
 const cors = require('cors');
@@ -11,7 +14,6 @@ const connectDB = require('./config/mongodb');
 const redisManager = require('./config/redis');
 const { kafkaManager, DEFAULT_TOPICS } = require('./config/kafka');
 const logger = require('./config/logger');
-const { initializeSentry } = require('./config/sentry');
 const requestId = require('./middlewares/request-id.middleware');
 const httpLogger = require('./middlewares/http-logger.middleware');
 const responseNormalizer = require('./middlewares/response-normalizer.middleware');
@@ -72,7 +74,9 @@ function getAllowedOrigins() {
 function configureApp() {
   app.set('trust proxy', 1);
 
-  initializeSentry(app);
+  // Attach Sentry error handler to the app
+  const { initializeSentry: attachSentry } = require('./config/sentry');
+  attachSentry(app);
 
   app.use(requestId);
   app.use(responseNormalizer);
@@ -177,15 +181,19 @@ function configureApp() {
 configureApp();
 
 async function connectOptionalInfrastructure() {
-  try {
-    await redisManager.connect();
-    logger.info('Redis connected');
-  } catch (redisError) {
-    const message = 'Redis unavailable; queues, cache, realtime adapter, and Redis-backed rate limits are degraded';
-    if (process.env.NODE_ENV === 'production' && process.env.REQUIRE_REDIS === 'true') {
-      throw redisError;
+  if (process.env.ENABLE_REDIS_CACHE !== 'false') {
+    try {
+      await redisManager.connect();
+      logger.info('Redis connected');
+    } catch (redisError) {
+      const message = 'Redis unavailable; queues, cache, realtime adapter, and Redis-backed rate limits are degraded';
+      if (process.env.NODE_ENV === 'production' && process.env.REQUIRE_REDIS === 'true') {
+        throw redisError;
+      }
+      logger.warn({ err: redisError }, message);
     }
-    logger.warn({ err: redisError }, message);
+  } else {
+    logger.info('Redis cache is disabled via ENABLE_REDIS_CACHE');
   }
 
   try {
