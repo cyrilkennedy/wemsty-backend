@@ -9,21 +9,29 @@ const { addJob, queuesEnabled } = require('../services/queue.service');
 // ════════════════════════════════════════════════
 
 const createTransporter = () => {
-  // For development: Use Ethereal (fake SMTP)
-  if (process.env.NODE_ENV === 'development' && !process.env.SMTP_HOST) {
-    console.log('⚠️  No SMTP configured. Using console logging for emails.');
+  if (!process.env.SMTP_HOST) {
+    if (process.env.NODE_ENV === 'production') {
+      console.warn('❌ SMTP_HOST is not defined in production. Email sending will fail.');
+    } else {
+      console.log('⚠️  No SMTP configured. Using console logging for emails.');
+    }
     return null;
   }
 
-  // For production: Use real SMTP (Gmail, SendGrid, etc.)
+  const port = Number(process.env.SMTP_PORT || 587);
+  
+  // For production: Use real SMTP (Gmail, SendGrid, Brevo, etc.)
   return nodemailer.createTransport({
     host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
+    port: port,
+    secure: port === 465 || process.env.SMTP_SECURE === 'true',
     auth: {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS
-    }
+    },
+    connectionTimeout: 10000, // 10 seconds timeout
+    greetingTimeout: 10000,
+    socketTimeout: 20000
   });
 };
 
@@ -58,15 +66,15 @@ const getOTPEmailTemplate = (otp, purpose) => {
       <div class="container">
         <div class="header">
           <h1>🔐 Wemsty Security</h1>
-          <p>${purposeText[purpose] || 'Verification'}</p>
+          <p>\${purposeText[purpose] || 'Verification'}</p>
         </div>
         <div class="content">
           <h2>Hello!</h2>
-          <p>We received a request to verify your identity for <strong>${purposeText[purpose]}</strong>.</p>
+          <p>We received a request to verify your identity for <strong>\${purposeText[purpose]}</strong>.</p>
           
           <div class="otp-box">
             <p style="margin: 0; font-size: 14px; color: #666;">Your verification code is:</p>
-            <div class="otp-code">${otp}</div>
+            <div class="otp-code">\${otp}</div>
             <p style="margin: 10px 0 0 0; font-size: 12px; color: #999;">Valid for 10 minutes</p>
           </div>
 
@@ -83,7 +91,7 @@ const getOTPEmailTemplate = (otp, purpose) => {
         </div>
         <div class="footer">
           <p>This email was sent from Wemsty. If you didn't request this, please ignore it.</p>
-          <p>&copy; ${new Date().getFullYear()} Wemsty. All rights reserved.</p>
+          <p>&copy; \${new Date().getFullYear()} Wemsty. All rights reserved.</p>
         </div>
       </div>
     </body>
@@ -126,7 +134,7 @@ const getPasswordResetSuccessTemplate = () => {
           <p>If you didn't make this change, please contact our support team immediately.</p>
         </div>
         <div class="footer">
-          <p>&copy; ${new Date().getFullYear()} Wemsty. All rights reserved.</p>
+          <p>&copy; \${new Date().getFullYear()} Wemsty. All rights reserved.</p>
         </div>
       </div>
     </body>
@@ -142,9 +150,9 @@ async function sendOTPEmailNow(email, otp, purpose) {
   const transporter = createTransporter();
 
   const mailOptions = {
-    from: `"Wemsty Security" <${process.env.SMTP_FROM || 'noreply@wemsty.com'}>`,
+    from: \`"Wemsty Security" <\${process.env.SMTP_FROM || 'noreply@wemsty.com'}>\`,
     to: email,
-    subject: `Your Wemsty Verification Code: ${otp}`,
+    subject: \`Your Wemsty Verification Code: \${otp}\`,
     html: getOTPEmailTemplate(otp, purpose)
   };
 
@@ -152,10 +160,10 @@ async function sendOTPEmailNow(email, otp, purpose) {
     if (!transporter) {
       // Development mode - log to console
       console.log('\n📧 ===== EMAIL (Development Mode) =====');
-      console.log(`To: ${email}`);
-      console.log(`Subject: ${mailOptions.subject}`);
-      console.log(`OTP Code: ${otp}`);
-      console.log(`Purpose: ${purpose}`);
+      console.log(\`To: \${email}\`);
+      console.log(\`Subject: \${mailOptions.subject}\`);
+      console.log(\`OTP Code: \${otp}\`);
+      console.log(\`Purpose: \${purpose}\`);
       console.log('======================================\n');
       return { success: true, messageId: 'dev-mode' };
     }
@@ -173,7 +181,7 @@ async function sendPasswordResetSuccessEmailNow(email) {
   const transporter = createTransporter();
 
   const mailOptions = {
-    from: `"Wemsty Security" <${process.env.SMTP_FROM || 'noreply@wemsty.com'}>`,
+    from: \`"Wemsty Security" <\${process.env.SMTP_FROM || 'noreply@wemsty.com'}>\`,
     to: email,
     subject: 'Password Reset Successful - Wemsty',
     html: getPasswordResetSuccessTemplate()
