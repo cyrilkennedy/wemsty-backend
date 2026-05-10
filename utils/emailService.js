@@ -145,6 +145,11 @@ const getPasswordResetSuccessTemplate = () => {
 async function sendOTPEmailNow(email, otp, purpose) {
   try {
     if (!process.env.BREVO_API_KEY) {
+      // In production, this is a critical error
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('MISSING_BREVO_API_KEY: Emails cannot be sent. Add BREVO_API_KEY to Render environment variables.');
+      }
+      
       // Development mode - log to console
       console.log('\n📧 ===== EMAIL (Development Mode) =====');
       console.log(`To: ${email}`);
@@ -171,6 +176,9 @@ async function sendOTPEmailNow(email, otp, purpose) {
 async function sendPasswordResetSuccessEmailNow(email) {
   try {
     if (!process.env.BREVO_API_KEY) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('MISSING_BREVO_API_KEY: Emails cannot be sent.');
+      }
       console.log('\n📧 Password reset success email (Dev Mode) sent to:', email);
       return { success: true, messageId: 'dev-mode' };
     }
