@@ -1,38 +1,34 @@
 // utils/emailService.js
 
-const nodemailer = require('nodemailer');
 const { emailQueue } = require('../queues');
 const { addJob, queuesEnabled } = require('../services/queue.service');
 
 // ════════════════════════════════════════════════
-// EMAIL TRANSPORTER CONFIGURATION
+// BREVO API EMAIL SENDER
 // ════════════════════════════════════════════════
 
-const createTransporter = () => {
-  if (!process.env.SMTP_HOST) {
-    if (process.env.NODE_ENV === 'production') {
-      console.warn('❌ SMTP_HOST is not defined in production. Email sending will fail.');
-    } else {
-      console.log('⚠️  No SMTP configured. Using console logging for emails.');
-    }
-    return null;
+const sendViaBrevo = async ({ to, subject, htmlContent }) => {
+  const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'api-key': process.env.BREVO_API_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      sender: { name: 'Wemsty Security', email: process.env.SMTP_FROM || 'noreply@wemsty.com' },
+      to: [{ email: to }],
+      subject,
+      htmlContent,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.message || `Brevo API error: ${response.status}`);
   }
 
-  const port = Number(process.env.SMTP_PORT || 587);
-  
-  // For production: Use real SMTP (Gmail, SendGrid, Brevo, etc.)
-  return nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: port,
-    secure: port === 465 || process.env.SMTP_SECURE === 'true',
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS
-    },
-    connectionTimeout: 10000, // 10 seconds timeout
-    greetingTimeout: 10000,
-    socketTimeout: 20000
-  });
+  const data = await response.json();
+  return data.messageId;
 };
 
 // ════════════════════════════════════════════════
@@ -147,30 +143,25 @@ const getPasswordResetSuccessTemplate = () => {
 // ════════════════════════════════════════════════
 
 async function sendOTPEmailNow(email, otp, purpose) {
-  const transporter = createTransporter();
-
-  const mailOptions = {
-    from: `"Wemsty Security" <${process.env.SMTP_FROM || 'noreply@wemsty.com'}>`,
-    to: email,
-    subject: `Your Wemsty Verification Code: ${otp}`,
-    html: getOTPEmailTemplate(otp, purpose)
-  };
-
   try {
-    if (!transporter) {
+    if (!process.env.BREVO_API_KEY) {
       // Development mode - log to console
       console.log('\n📧 ===== EMAIL (Development Mode) =====');
       console.log(`To: ${email}`);
-      console.log(`Subject: ${mailOptions.subject}`);
       console.log(`OTP Code: ${otp}`);
       console.log(`Purpose: ${purpose}`);
       console.log('======================================\n');
       return { success: true, messageId: 'dev-mode' };
     }
 
-    const info = await transporter.sendMail(mailOptions);
-    console.log('✅ Email sent:', info.messageId);
-    return { success: true, messageId: info.messageId };
+    const messageId = await sendViaBrevo({
+      to: email,
+      subject: `Your Wemsty Verification Code: ${otp}`,
+      htmlContent: getOTPEmailTemplate(otp, purpose),
+    });
+
+    console.log('✅ Email sent:', messageId);
+    return { success: true, messageId };
   } catch (error) {
     console.error('❌ Email send error:', error);
     return { success: false, error: error.message };
@@ -178,23 +169,19 @@ async function sendOTPEmailNow(email, otp, purpose) {
 }
 
 async function sendPasswordResetSuccessEmailNow(email) {
-  const transporter = createTransporter();
-
-  const mailOptions = {
-    from: `"Wemsty Security" <${process.env.SMTP_FROM || 'noreply@wemsty.com'}>`,
-    to: email,
-    subject: 'Password Reset Successful - Wemsty',
-    html: getPasswordResetSuccessTemplate()
-  };
-
   try {
-    if (!transporter) {
+    if (!process.env.BREVO_API_KEY) {
       console.log('\n📧 Password reset success email (Dev Mode) sent to:', email);
       return { success: true, messageId: 'dev-mode' };
     }
 
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
+    const messageId = await sendViaBrevo({
+      to: email,
+      subject: 'Password Reset Successful - Wemsty',
+      htmlContent: getPasswordResetSuccessTemplate(),
+    });
+
+    return { success: true, messageId };
   } catch (error) {
     console.error('❌ Email send error:', error);
     return { success: false, error: error.message };
