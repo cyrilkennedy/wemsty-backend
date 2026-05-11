@@ -29,9 +29,11 @@
   - [Search](#search)
   - [Payments](#payments)
   - [Moderation](#moderation)
+  - [Mobile Updates](#mobile-updates)
 - [Frontend Engineer Contract (Per API)](#frontend-engineer-contract-per-api)
 - [Realtime (WebSocket)](#realtime-websocket)
 - [Data Models](#data-models)
+- [Environment Variables & Infrastructure](#environment-variables--infrastructure)
 - [Additional Notes](#additional-notes)
 
 ---
@@ -67,7 +69,7 @@ If you are new to JWT auth, start with:
 ## Local Setup Checklist
 
 Before testing endpoints, confirm:
-- API server is running on `http://localhost:3001`
+- API server is running on `http://api.wemsty.com`
 - MongoDB is connected (check `GET /health`)
 - You have a test account (or create one with `POST /auth/signup`)
 - You are sending JSON with `Content-Type: application/json`
@@ -376,10 +378,36 @@ OTP reset flow payloads:
 
 ```json
 {
-  "token": "verified_token",
-  "newPassword": "new_password"
+  "resetToken": "verified_token_from_step_2",
+  "newPassword": "new_password_at_least_8_chars"
 }
 ```
+
+#### Detailed OTP Reset Flow (Steps)
+
+**Step 1: Request OTP**
+`POST /auth/password-reset/request`
+Payload: `{"email": "user@example.com"}`
+Response: `{"status": "success", "message": "Verification code sent..."}`
+
+**Step 2: Verify OTP**
+`POST /auth/password-reset/verify-otp`
+Payload: `{"email": "user@example.com", "otp": "123456"}`
+Response:
+```json
+{
+  "status": "success",
+  "data": {
+    "resetToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "expiresIn": "30 minutes"
+  }
+}
+```
+
+**Step 3: Complete Reset**
+`POST /auth/password-reset/reset`
+Payload: `{"resetToken": "<token_from_step_2>", "newPassword": "newpassword123"}`
+Response: `{"status": "success", "message": "Password reset successful!"}`
 
 Email verification request:
 
@@ -792,6 +820,33 @@ Feed queries commonly use `page` and `limit`.
 - For pull-to-refresh/manual refresh UX, call `POST /feed/home/refresh` then refetch first page.
 - Respect `mode` and cache flags from UI controls when calling sphere/discovery endpoints.
 - Gracefully handle feed throttling (`429`) with retry delay from `retryAfter`.
+
+---
+
+### Mobile Updates
+
+Secure proxy for mobile application updates. Protects the GitHub Personal Access Token by fetching and streaming assets through the backend.
+
+| Method | Endpoint | Access | Purpose |
+|--------|----------|--------|---------|
+| GET | `/mobile/update-check` | Public | Check for latest mobile release |
+| GET | `/mobile/update-download/:assetId` | Public | Stream update asset from GitHub |
+
+#### Check Update Example
+`GET /api/mobile/update-check`
+
+Response:
+```json
+{
+  "status": "success",
+  "data": {
+    "version": "1.0.5",
+    "notes": "Bug fixes and performance improvements",
+    "download_url": "https://api.wemsty.com/api/mobile/update-download/123456",
+    "published_at": "2024-05-10T21:00:00Z"
+  }
+}
+```
 
 ---
 
@@ -1394,4 +1449,22 @@ Runtime behavior:
 
 ---
 
-**Last updated:** 2026-04-11
+**Last updated:** 2026-05-10
+
+## Environment Variables & Infrastructure
+
+### Email Infrastructure (Plunk + Nodemailer)
+The backend has transitioned to **Plunk**. For reliability, it uses **Nodemailer** for SMTP relay.
+
+**Required Env Vars:**
+- PLUNK_API_KEY: Your Plunk Secret Key (sk_...).
+- SMTP_FROM: The verified sender address (e.g., noreply@mail.wemsty.com).
+
+### Mobile Update Security Bridge
+Required for private GitHub repositories.
+
+**Required Env Vars:**
+- GITHUB_ACCESS_TOKEN: Personal Access Token (repo scope).
+- GITHUB_REPO_OWNER: GitHub username (e.g., cyrilkennedy).
+- GITHUB_REPO_NAME: Repository name (e.g., wemsty).
+

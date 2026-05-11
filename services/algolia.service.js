@@ -172,12 +172,16 @@ class AlgoliaService {
     if (!this.client) return;
 
     try {
+      // Prevent large records by cleaning up fields
+      const avatar = user.profile?.avatar;
+      const isBase64 = avatar?.startsWith('data:');
+      
       const record = {
         objectID: user._id.toString(),
         username: user.username,
         displayName: user.profile?.displayName,
-        avatar: user.profile?.avatar,
-        bio: user.profile?.bio,
+        avatar: isBase64 ? null : avatar, // Don't index base64 strings
+        bio: user.profile?.bio?.substring(0, 500), // Truncate long bios
         role: user.role,
         isEmailVerified: user.isEmailVerified,
         followersCount: user.followers_count || 0,
@@ -275,7 +279,7 @@ class AlgoliaService {
       // Configure Posts Index
       await this.client.setSettings({
         indexName: this.postsIndexName,
-        settings: {
+        indexSettings: {
           searchableAttributes: [
             'text',
             'hashtags',
@@ -298,7 +302,7 @@ class AlgoliaService {
       // Configure Users Index
       await this.client.setSettings({
         indexName: this.usersIndexName,
-        settings: {
+        indexSettings: {
           searchableAttributes: [
             'username',
             'displayName',
