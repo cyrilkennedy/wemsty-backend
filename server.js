@@ -209,24 +209,36 @@ async function connectOptionalInfrastructure() {
 
 async function startServer() {
   try {
+    // 1. Mandatory connection: Database
     await connectDB();
-    await connectOptionalInfrastructure();
 
+    // 2. Create the server
     const httpServer = http.createServer(app);
-    await initializeRealtime(httpServer);
-
-    server = httpServer.listen(PORT, () => {
+    
+    // 3. Start listening IMMEDIATELY (prevents Render port scan timeout)
+    server = httpServer.listen(PORT, '0.0.0.0', () => {
       logger.info({
         port: PORT,
+        host: '0.0.0.0',
         environment: process.env.NODE_ENV || 'development',
         realtimeNamespace: '/realtime',
         corsOrigins: getAllowedOrigins()
-      }, 'Wemsty Backend started');
+      }, '✅ Wemsty Backend is listening and ready');
+
+      // 4. Connect optional infrastructure in the background after listening
+      connectOptionalInfrastructure().catch(err => {
+        logger.error({ err }, 'Background infrastructure initialization failed');
+      });
+
+      // 5. Initialize Realtime (socket.io, etc)
+      initializeRealtime(httpServer).catch(err => {
+        logger.error({ err }, 'Realtime initialization failed');
+      });
     });
 
     return server;
   } catch (error) {
-    logger.error({ err: error }, 'Failed to start server');
+    logger.error({ err: error }, '❌ Critical: Failed to start server');
     process.exit(1);
   }
 }
