@@ -99,7 +99,7 @@ Use this exact flow when onboarding a new frontend dev.
 1. Signup
 
 ```bash
-curl -X POST http://localhost:3001/api/auth/signup ^
+curl -X POST http://api.wemsty.com/api/auth/signup ^
   -H "Content-Type: application/json" ^
   -d "{\"email\":\"junior@example.com\",\"username\":\"junior_dev\",\"password\":\"password123\"}"
 ```
@@ -107,7 +107,7 @@ curl -X POST http://localhost:3001/api/auth/signup ^
 2. Login and copy `data.accessToken` from the response
 
 ```bash
-curl -X POST http://localhost:3001/api/auth/login ^
+curl -X POST http://api.wemsty.com/api/auth/login ^
   -H "Content-Type: application/json" ^
   -d "{\"email\":\"junior@example.com\",\"password\":\"password123\"}"
 ```
@@ -115,14 +115,14 @@ curl -X POST http://localhost:3001/api/auth/login ^
 3. Get my profile
 
 ```bash
-curl http://localhost:3001/api/users/profile ^
+curl http://api.wemsty.com/api/users/profile ^
   -H "Authorization: Bearer <accessToken>"
 ```
 
 4. Update profile (bio + avatar URL)
 
 ```bash
-curl -X PATCH http://localhost:3001/api/users/profile ^
+curl -X PATCH http://api.wemsty.com/api/users/profile ^
   -H "Content-Type: application/json" ^
   -H "Authorization: Bearer <accessToken>" ^
   -d "{\"profile\":{\"displayName\":\"Junior Dev\",\"bio\":\"Building with Wemsty API\",\"avatar\":\"https://example.com/avatar.jpg\"}}"
@@ -137,7 +137,7 @@ curl -X PATCH http://localhost:3001/api/users/profile ^
 All routes are relative to:
 
 ```text
-http://localhost:3001/api
+http://api.wemsty.com/api
 ```
 
 ### Authentication

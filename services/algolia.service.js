@@ -24,7 +24,7 @@ function shouldDeletePostUpdate(updates = {}) {
 class AlgoliaService {
   constructor() {
     this.appId = process.env.ALGOLIA_APP_ID;
-    this.apiKey = process.env.ALGOLIA_ADMIN_KEY;
+    this.apiKey = process.env.ALGOLIA_WRITE_KEY;
     
     if (!this.appId || !this.apiKey) {
       console.warn('⚠️  Algolia credentials missing. Search indexing will be disabled.');
