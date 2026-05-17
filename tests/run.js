@@ -10,6 +10,11 @@ const runAlgoliaTests = require('./algolia.test');
 const runPaystackClientTests = require('./paystack-client.test');
 const runWorkerProcessorTests = require('./worker-processors.test');
 const runEmailConfigTests = require('./email-config.test');
+const runPasswordResetTests = require('./password-reset.test');
+const runInteractionUniquenessTests = require('./interaction-uniqueness.test');
+const runMediaAssetTests = require('./media-asset.test');
+const runProfileSupportEndpointTests = require('./profile-support-endpoints.test');
+const runAlgorithmTests = require('./algorithm.test');
 
 async function main() {
   await runHealthTests();
@@ -24,6 +29,11 @@ async function main() {
   await runPaystackClientTests();
   await runWorkerProcessorTests();
   await runEmailConfigTests();
+  await runPasswordResetTests();
+  await runInteractionUniquenessTests();
+  await runMediaAssetTests();
+  await runProfileSupportEndpointTests();
+  await runAlgorithmTests();
   console.log('All tests passed');
 }
 

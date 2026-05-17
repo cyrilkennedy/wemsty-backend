@@ -51,6 +51,14 @@ export default function () {
     check(http.post(`${baseUrl}/api/posts/${postId}/like`, '{}', { headers: requestHeaders }), {
       'like endpoint reachable': (response) => [200, 400, 401, 403, 404, 429].includes(response.status)
     });
+
+    check(http.post(`${baseUrl}/api/posts/${postId}/engagement`, JSON.stringify({
+      action: 'dwell',
+      dwellSeconds: 8,
+      source: 'k6_social'
+    }), { headers: requestHeaders }), {
+      'algorithm engagement reachable': (response) => [200, 400, 401, 403, 404, 429].includes(response.status)
+    });
   }
 
   if (accessToken && conversationId) {

@@ -185,6 +185,25 @@ const PostSchema = new mongoose.Schema({
     index: true
   },
 
+  algorithm: {
+    profileClicks: { type: Number, default: 0, min: 0 },
+    linkClicks: { type: Number, default: 0, min: 0 },
+    saves: { type: Number, default: 0, min: 0 },
+    authorReplied: { type: Number, default: 0, min: 0 },
+    impressions: { type: Number, default: 0, min: 0 },
+    hideCount: { type: Number, default: 0, min: 0 },
+    notInterestedCount: { type: Number, default: 0, min: 0 },
+    reportCount: { type: Number, default: 0, min: 0 },
+    hideRate: { type: Number, default: 0, min: 0 },
+    reportRate: { type: Number, default: 0, min: 0 },
+    notInterestedRate: { type: Number, default: 0, min: 0 },
+    totalDwellSeconds: { type: Number, default: 0, min: 0 },
+    avgDwellSeconds: { type: Number, default: 0, min: 0 },
+    impressionBudget: { type: Number, default: 200, min: 0 },
+    budgetExhausted: { type: Boolean, default: false },
+    lightweightMlScore: { type: Number, default: 0, min: 0, max: 1 }
+  },
+
   // Quality threshold for Sphere
   qualityScore: {
     type: Number,
@@ -252,6 +271,9 @@ PostSchema.index({ visibility: 1, status: 1, sphereEligible: 1, createdAt: -1 })
 PostSchema.index({ visibility: 1, status: 1, sphereEligible: 1, sphereScore: -1, 'engagement.score': -1, createdAt: -1 });
 PostSchema.index({ sphereScore: -1, createdAt: -1 }); // For You feed
 PostSchema.index({ 'engagement.score': -1, createdAt: -1 }); // Trending
+PostSchema.index({ visibility: 1, status: 1, sphereEligible: 1, 'algorithm.lightweightMlScore': -1, sphereScore: -1, createdAt: -1 });
+PostSchema.index({ 'algorithm.budgetExhausted': 1, createdAt: -1 });
+PostSchema.index({ 'algorithm.notInterestedRate': 1, 'algorithm.hideRate': 1 });
 
 // Text search index
 PostSchema.index({ 
@@ -305,16 +327,25 @@ PostSchema.pre('save', function() {
 
 // Calculate engagement score
 PostSchema.pre('save', function() {
-  if (this.isModified('engagement')) {
+  if (this.isModified('engagement') || this.isModified('algorithm')) {
     const { likes, comments, reposts, views } = this.engagement;
     
-    // Weighted engagement score
-    this.engagement.score = (likes * 1) + (comments * 2) + (reposts * 3);
+    const algorithm = this.algorithm || {};
+
+    // Weighted engagement score based on stronger social signals.
+    this.engagement.score =
+      (likes * 1) +
+      (comments * 13.5) +
+      (reposts * 20) +
+      ((algorithm.saves || 0) * 10) +
+      ((algorithm.profileClicks || 0) * 12) +
+      ((algorithm.linkClicks || 0) * 11) +
+      ((algorithm.authorReplied || 0) * 75);
     
     // Calculate velocity (likes per hour since creation)
     if (this.createdAt) {
       const hoursOld = (Date.now() - this.createdAt) / (1000 * 60 * 60);
-      this.engagement.velocity = hoursOld > 0 ? likes / hoursOld : likes;
+      this.engagement.velocity = hoursOld > 0 ? this.engagement.score / hoursOld : this.engagement.score;
     }
   }
 });
@@ -571,9 +602,23 @@ PostSchema.methods.calculateSphereScore = function() {
   const decayFactor = Math.exp(-ageHours / 24); // Exponential decay over 24 hours
   
   const { likes, comments, reposts } = this.engagement;
-  const baseScore = (likes * 1) + (comments * 2) + (reposts * 3);
+  const algorithm = this.algorithm || {};
+  const baseScore =
+    (likes * 1) +
+    (comments * 13.5) +
+    (reposts * 20) +
+    ((algorithm.saves || 0) * 10) +
+    ((algorithm.profileClicks || 0) * 12) +
+    ((algorithm.linkClicks || 0) * 11) +
+    ((algorithm.authorReplied || 0) * 75);
+  const negativeMultiplier = Math.max(0, 1 - Math.min(
+    ((algorithm.hideRate || 0) * 2) +
+    ((algorithm.reportRate || 0) * 3) +
+    ((algorithm.notInterestedRate || 0) * 2.5),
+    1
+  ));
   
-  this.sphereScore = baseScore * decayFactor;
+  this.sphereScore = baseScore * decayFactor * negativeMultiplier;
   return this.sphereScore;
 };
 

@@ -12,6 +12,7 @@
     "test": "node tests/run.js",
     "load:smoke": "k6 run load-tests/smoke.js",
     "load:social": "k6 run load-tests/social.js",
+    "algorithm:train": "node scripts/train-lightweight-ranker.js",
     "dedupe:interactions": "node scripts/dedupe-interactions.js --apply",
     "dedupe:interactions:dry": "node scripts/dedupe-interactions.js --dry-run",
     "clear:interactions": "node scripts/clear-interactions.js --apply",

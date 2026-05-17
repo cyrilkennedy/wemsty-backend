@@ -3,6 +3,8 @@ const router = express.Router();
 const moderationController = require('../controllers/moderation.controller');
 const authMiddleware = require('../middlewares/auth.middleware');
 
+router.get('/report-reasons', moderationController.getReportReasons);
+
 router.use(authMiddleware.protect);
 
 router.post('/reports', moderationController.createReport);

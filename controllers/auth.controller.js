@@ -96,6 +96,23 @@ const createAndSendTokens = async (user, statusCode, res, message = 'Success') =
   });
 };
 
+async function completePasswordReset(email, newPassword) {
+  const user = await User.findOne({ email });
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+
+  user.password = newPassword;
+  user.passwordResetToken = undefined;
+  user.passwordResetExpires = undefined;
+  user.passwordChangedAt = Date.now();
+  await user.save();
+
+  await user.invalidateAllTokens();
+  await OTP.deleteMany({ email, purpose: 'password_reset' });
+  await sendPasswordResetSuccessEmail(user.email);
+}
+
 // ════════════════════════════════════════════════
 // SIGNUP - EMAIL & PASSWORD
 // ════════════════════════════════════════════════
@@ -642,10 +659,10 @@ exports.verifyPasswordResetOTP = catchAsync(async (req, res, next) => {
 // STEP 3: RESET PASSWORD (AFTER OTP VERIFICATION)
 // ════════════════════════════════════════════════
 exports.resetPasswordWithOTP = catchAsync(async (req, res, next) => {
-  const { resetToken, newPassword } = req.body;
+  const { resetToken, email, otp, newPassword } = req.body;
 
-  if (!resetToken || !newPassword) {
-    return next(new AppError('Please provide reset token and new password', 400));
+  if (!newPassword) {
+    return next(new AppError('Please provide new password', 400));
   }
 
   // Validate password strength
@@ -653,41 +670,36 @@ exports.resetPasswordWithOTP = catchAsync(async (req, res, next) => {
     return next(new AppError('Password must be at least 8 characters long', 400));
   }
 
-  // Verify reset token
-  let decoded;
-  try {
-    decoded = jwt.verify(resetToken, process.env.JWT_RESET_SECRET);
-  } catch (error) {
-    return next(new AppError('Invalid or expired reset token. Please request a new OTP.', 400));
+  if (resetToken) {
+    // Flow A: verify OTP first, then reset with the temporary JWT reset token.
+    let decoded;
+    try {
+      decoded = jwt.verify(resetToken, process.env.JWT_RESET_SECRET);
+    } catch (error) {
+      return next(new AppError('Invalid or expired reset token. Please request a new OTP.', 400));
+    }
+
+    if (decoded.purpose !== 'password_reset' || !decoded.email) {
+      return next(new AppError('Invalid reset token. Please request a new OTP.', 400));
+    }
+
+    const otpVerified = await OTP.isOTPVerified(decoded.email, 'password_reset');
+    if (!otpVerified) {
+      return next(new AppError('OTP verification expired. Please request a new code.', 400));
+    }
+
+    await completePasswordReset(decoded.email, newPassword);
+  } else if (email && otp) {
+    // Flow B: reset directly with email, OTP, and new password in one request.
+    const result = await OTP.verifyOTP(email, otp, 'password_reset');
+    if (!result.success) {
+      return next(new AppError(result.error, 400));
+    }
+
+    await completePasswordReset(email, newPassword);
+  } else {
+    return next(new AppError('Please provide either reset token and new password, or email, OTP, and new password', 400));
   }
-
-  // Check if OTP was verified
-  const otpVerified = await OTP.isOTPVerified(decoded.email, 'password_reset');
-  if (!otpVerified) {
-    return next(new AppError('OTP verification expired. Please request a new code.', 400));
-  }
-
-  // Find user
-  const user = await User.findOne({ email: decoded.email });
-  if (!user) {
-    return next(new AppError('User not found', 404));
-  }
-
-  // Update password
-  user.password = newPassword;
-  user.passwordResetToken = undefined;
-  user.passwordResetExpires = undefined;
-  user.passwordChangedAt = Date.now();
-  await user.save();
-
-  // Invalidate all existing tokens (force re-login on all devices)
-  await user.invalidateAllTokens();
-
-  // Delete used OTP records
-  await OTP.deleteMany({ email: decoded.email, purpose: 'password_reset' });
-
-  // Send success email
-  await sendPasswordResetSuccessEmail(user.email);
 
   res.status(200).json({
     status: 'success',

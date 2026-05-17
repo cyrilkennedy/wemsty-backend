@@ -67,6 +67,7 @@ router.get('/sphere/category/:category', feedRateLimit, feedController.getCatego
  * @desc    Get feed ranking information for a post (debug)
  * @access  Private
  */
+router.get('/analytics', authMiddleware.restrictTo('admin', 'moderator'), feedController.getAlgorithmAnalytics);
 router.get('/ranking/:postId', feedController.getFeedRankingInfo);
 
 module.exports = router;

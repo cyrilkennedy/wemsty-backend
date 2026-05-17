@@ -10,6 +10,49 @@ const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
 const { writeAuditLog } = require('../services/audit.service');
 
+const REPORT_REASONS = [
+  {
+    code: 'spam',
+    label: 'Spam',
+    description: 'Repeated, misleading, or unwanted content'
+  },
+  {
+    code: 'harassment',
+    label: 'Harassment or bullying',
+    description: 'Targeted abuse, threats, or intimidation'
+  },
+  {
+    code: 'hate',
+    label: 'Hate speech',
+    description: 'Attacks or dehumanizing content based on protected identity'
+  },
+  {
+    code: 'violence',
+    label: 'Violence or threats',
+    description: 'Threats, incitement, or graphic violent content'
+  },
+  {
+    code: 'sexual_content',
+    label: 'Sexual content',
+    description: 'Explicit or unwanted sexual content'
+  },
+  {
+    code: 'self_harm',
+    label: 'Self-harm',
+    description: 'Content encouraging or depicting self-harm'
+  },
+  {
+    code: 'scam',
+    label: 'Scam or fraud',
+    description: 'Impersonation, phishing, fraud, or deceptive offers'
+  },
+  {
+    code: 'other',
+    label: 'Other',
+    description: 'Something else that violates Wemsty rules'
+  }
+];
+
 function getTargetModel(targetType) {
   return {
     user: User,
@@ -19,6 +62,15 @@ function getTargetModel(targetType) {
     dm_message: DMMessage
   }[targetType];
 }
+
+exports.getReportReasons = catchAsync(async (req, res) => {
+  res.status(200).json({
+    success: true,
+    data: {
+      reasons: REPORT_REASONS
+    }
+  });
+});
 
 exports.createReport = catchAsync(async (req, res, next) => {
   const { targetType, targetId, reasonCode, detailsText } = req.body;

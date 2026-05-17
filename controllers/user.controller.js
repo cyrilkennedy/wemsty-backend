@@ -9,7 +9,16 @@ const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
 const { writeAuditLog } = require('../services/audit.service');
 const { sanitizeExternalUrl } = require('../utils/url-sanitizer');
+const algorithmService = require('../services/algorithm.service');
 const FEED_VISIBLE_POST_TYPES = ['original', 'quote'];
+
+function normalizeTopicList(value, maxItems = 30) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map((topic) => String(topic || '').trim().toLowerCase().replace(/^#/, ''))
+    .filter((topic) => topic.length >= 2 && topic.length <= 40)
+  )].slice(0, maxItems);
+}
 
 async function toSafeUserWithLiveThoughtCount(user) {
   const safeUser = user.toSafeObject();
@@ -56,6 +65,7 @@ exports.updateProfile = catchAsync(async (req, res, next) => {
     'profile.bio',
     'profile.avatar',
     'profile.location',
+    'profile.country',
     'profile.website',
     'profile.phoneNumber'
   ];
@@ -108,6 +118,59 @@ exports.updateProfile = catchAsync(async (req, res, next) => {
     message: 'Profile updated successfully',
     data: {
       user: safeUser
+    }
+  });
+});
+
+exports.updateAlgorithmPreferences = catchAsync(async (req, res, next) => {
+  const { onboardingTopics, mutedTopics } = req.body || {};
+  const user = await User.findById(req.user._id);
+
+  if (!user) {
+    return next(new AppError('User not found', 404));
+  }
+
+  user.algorithm = {
+    ...(user.algorithm || {}),
+    ...(Array.isArray(onboardingTopics) ? { onboardingTopics: normalizeTopicList(onboardingTopics) } : {}),
+    ...(Array.isArray(mutedTopics) ? { mutedTopics: normalizeTopicList(mutedTopics, 100) } : {})
+  };
+
+  await user.save({ validateBeforeSave: true });
+
+  res.status(200).json({
+    success: true,
+    message: 'Feed preferences updated successfully',
+    data: {
+      algorithm: user.algorithm
+    }
+  });
+});
+
+exports.trackProfileClick = catchAsync(async (req, res, next) => {
+  const { userId } = req.params;
+  const target = await User.findOne({ _id: userId, accountStatus: 'active' }).select('_id username');
+
+  if (!target) {
+    return next(new AppError('User not found', 404));
+  }
+
+  await algorithmService.recordProfileInteraction({
+    viewerId: req.user._id,
+    authorId: target._id,
+    action: 'profile_click',
+    metadata: {
+      source: req.body?.source || req.query?.source || 'profile',
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent']
+    }
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Profile click recorded',
+    data: {
+      userId: target._id
     }
   });
 });
@@ -177,6 +240,7 @@ exports.getUserByUsername = catchAsync(async (req, res, next) => {
       avatar: sanitizeExternalUrl(user.profile?.avatar),
       bio: user.profile?.bio,
       location: user.profile?.location,
+      country: user.profile?.country,
       website: user.profile?.website
     },
     role: user.role,

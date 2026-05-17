@@ -41,14 +41,17 @@ exports.getSphereFeed = catchAsync(async (req, res, next) => {
     page = 1,
     limit = 20,
     mode = 'top', // 'top' or 'latest'
-    useCache = true
+    useCache = true,
+    variant = null
   } = req.query;
 
   const feed = await feedService.getSphereFeed(userId, {
     page: parseInt(page),
     limit: parseInt(limit),
     mode,
-    useCache: useCache !== 'false'
+    useCache: useCache !== 'false',
+    variant,
+    requestId: req.id || req.requestId || req.headers['x-request-id']
   });
 
   res.status(200).json({
@@ -120,22 +123,30 @@ exports.getFeedRankingInfo = catchAsync(async (req, res, next) => {
     return next(new AppError('Post not found', 404));
   }
 
-  const score = await feedService.calculatePostScore(post, userId);
+  const breakdown = await feedService.getPostScoreBreakdown(post, userId, {
+    variant: req.query.variant
+  });
   const reason = feedService.getRankReason(post, userId);
 
   res.status(200).json({
     status: 'success',
     data: {
       postId,
-      score,
+      score: breakdown.finalScore,
       reason,
-      factors: {
-        recency: feedService.calculateRecencyScore(post.createdAt),
-        engagement: feedService.calculateEngagementScore(post),
-        relationship: feedService.calculateRelationshipWeight(post, userId),
-        communityAffinity: await feedService.calculateCommunityAffinity(post, userId),
-        safetyPenalty: feedService.calculateSafetyPenalty(post)
-      }
+      breakdown
     }
+  });
+});
+
+exports.getAlgorithmAnalytics = catchAsync(async (req, res) => {
+  const analytics = await feedService.getAlgorithmAnalytics({
+    days: req.query.days
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Algorithm analytics loaded successfully',
+    data: analytics
   });
 });

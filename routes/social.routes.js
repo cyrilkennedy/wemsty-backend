@@ -97,6 +97,7 @@ router.get('/mutual/:userId', socialController.getMutualFollowers);
  * @access  Private
  */
 router.get('/suggestions', socialController.getFollowSuggestions);
+router.get('/relationship/:userId', socialController.getRelationshipStatus);
 
 // ════════════════════════════════════════════════
 // BLOCK ROUTES

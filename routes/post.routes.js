@@ -61,6 +61,12 @@ router.get('/category/:categorySlug', authMiddleware.optionalAuth, postControlle
  */
 router.get('/search', authMiddleware.optionalAuth, postController.searchPosts);
 
+router.get('/likes/me', authMiddleware.protect, postController.getMyLikedPosts);
+router.get('/bookmarks/me', authMiddleware.protect, postController.getBookmarks);
+router.get('/user/:username/media', authMiddleware.optionalAuth, postController.getUserMediaPosts);
+router.get('/user/:username/reposts', authMiddleware.optionalAuth, postController.getUserReposts);
+router.get('/user/:username', authMiddleware.optionalAuth, postController.getUserPosts);
+
 /**
  * @route   GET /api/posts/:postId
  * @desc    Get single post
@@ -74,13 +80,9 @@ router.get('/:postId', authMiddleware.optionalAuth, postController.getPost);
  * @access  Public
  */
 router.get('/:postId/thread', authMiddleware.optionalAuth, postController.getPostThread);
-
-/**
- * @route   GET /api/posts/user/:username
- * @desc    Get user's posts (profile feed)
- * @access  Public
- */
-router.get('/user/:username', authMiddleware.optionalAuth, postController.getUserPosts);
+router.get('/:postId/reposts', authMiddleware.optionalAuth, postController.getPostReposts);
+router.get('/:postId/quotes', authMiddleware.optionalAuth, postController.getPostQuotes);
+router.post('/:postId/view', authMiddleware.optionalAuth, postController.trackPostView);
 
 // ════════════════════════════════════════════════
 // PROTECTED ROUTES (Require Authentication)
@@ -142,6 +144,8 @@ router.delete('/reply/:replyId/like', interactionLimiter, postController.unlikeR
  */
 router.post('/:postId/like', interactionLimiter, postController.toggleLike);
 router.delete('/:postId/like', interactionLimiter, postController.unlikePost);
+router.post('/:postId/engagement', interactionLimiter, postController.trackPostEngagement);
+router.post('/:postId/link-click', interactionLimiter, postController.trackPostLinkClick);
 
 /**
  * @route   GET /api/posts/:postId/likes
@@ -157,13 +161,6 @@ router.get('/:postId/likes', postController.getPostLikes);
  */
 router.post('/:postId/bookmark', postController.toggleBookmark);
 router.delete('/:postId/bookmark', postController.unbookmarkPost);
-
-/**
- * @route   GET /api/posts/bookmarks/me
- * @desc    Get current user's bookmarks
- * @access  Private
- */
-router.get('/bookmarks/me', postController.getBookmarks);
 
 /**
  * @route   DELETE /api/posts/:postId

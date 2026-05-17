@@ -44,6 +44,20 @@ router.get('/profile', userController.getProfile);
 router.patch('/profile', userController.updateProfile);
 
 /**
+ * @route   PATCH /api/users/feed-preferences
+ * @desc    Update feed onboarding and muted topic preferences
+ * @access  Private
+ */
+router.patch('/feed-preferences', userController.updateAlgorithmPreferences);
+
+/**
+ * @route   POST /api/users/:userId/profile-click
+ * @desc    Track profile click/visit for feed affinity
+ * @access  Private
+ */
+router.post('/:userId/profile-click', userController.trackProfileClick);
+
+/**
  * @route   DELETE /api/users/account
  * @desc    Delete/deactivate user account
  * @access  Private

@@ -9,13 +9,23 @@ const mediaAssetSchema = new mongoose.Schema({
   },
   url: {
     type: String,
-    required: true,
+    required: function() {
+      return this.resourceType !== 'text';
+    },
     trim: true
   },
   resourceType: {
     type: String,
-    enum: ['image', 'video', 'raw'],
+    enum: ['image', 'video', 'raw', 'text'],
     default: 'image'
+  },
+  usage: {
+    type: String,
+    trim: true,
+    lowercase: true,
+    maxlength: 80,
+    match: [/^[a-z0-9][a-z0-9_-]*$/, 'usage must be a lowercase slug'],
+    default: 'general'
   },
   owner: {
     type: mongoose.Schema.Types.ObjectId,
@@ -25,7 +35,10 @@ const mediaAssetSchema = new mongoose.Schema({
   },
   attachedToType: {
     type: String,
-    enum: ['post', 'reply', 'user', 'circle', 'message', null],
+    trim: true,
+    lowercase: true,
+    maxlength: 80,
+    match: [/^[a-z0-9][a-z0-9_-]*$/, 'attachedToType must be a lowercase slug'],
     default: null
   },
   attachedToId: {
@@ -43,6 +56,21 @@ const mediaAssetSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  text: {
+    type: String,
+    maxlength: 20000,
+    default: null
+  },
+  metadata: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
+  tags: [{
+    type: String,
+    trim: true,
+    lowercase: true,
+    maxlength: 60
+  }],
   deletedAt: {
     type: Date,
     default: null
@@ -52,6 +80,7 @@ const mediaAssetSchema = new mongoose.Schema({
 });
 
 mediaAssetSchema.index({ owner: 1, createdAt: -1 });
+mediaAssetSchema.index({ owner: 1, usage: 1, createdAt: -1 });
 mediaAssetSchema.index({ status: 1, attachedToId: 1, createdAt: 1 });
 
 module.exports = mongoose.model('MediaAsset', mediaAssetSchema);

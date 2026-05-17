@@ -99,6 +99,7 @@ const UserSchema = new mongoose.Schema({
     avatar: String,
     bio: String,
     location: String,
+    country: String,
     website: String,
     phoneNumber: String
   },
@@ -149,6 +150,27 @@ const UserSchema = new mongoose.Schema({
   // ────────────────────────────────────────────────
   // METADATA
   // ────────────────────────────────────────────────
+  algorithm: {
+    onboardingTopics: [{
+      type: String,
+      lowercase: true,
+      trim: true
+    }],
+    mutedTopics: [{
+      type: String,
+      lowercase: true,
+      trim: true
+    }],
+    reputation: {
+      score: { type: Number, default: 1, min: 0, max: 1 },
+      reportRate: { type: Number, default: 0, min: 0 },
+      hideRate: { type: Number, default: 0, min: 0 },
+      notInterestedRate: { type: Number, default: 0, min: 0 },
+      lastCalculatedAt: Date
+    },
+    lastFeedGeneratedAt: Date
+  },
+
   refreshTokens: [{
     tokenHash: {
       type: String,
@@ -176,6 +198,7 @@ const UserSchema = new mongoose.Schema({
 // ════════════════════════════════════════════════
 UserSchema.index({ 'authProviders.providerId': 1 });
 UserSchema.index({ accountStatus: 1 });
+UserSchema.index({ 'algorithm.onboardingTopics': 1 });
 
 // ════════════════════════════════════════════════
 // VIRTUALS

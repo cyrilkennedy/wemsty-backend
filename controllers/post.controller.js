@@ -25,10 +25,55 @@ const { kafkaManager } = require('../config/kafka');
 const realtimeEvents = require('../services/realtime-events.service');
 const algoliaService = require('../services/algolia.service');
 const { sanitizeExternalUrl } = require('../utils/url-sanitizer');
+const algorithmService = require('../services/algorithm.service');
+const feedService = require('../services/feed.service');
 
 const REPOST_TYPES = ['repost', 'quote'];
 const FEED_VISIBLE_POST_TYPES = ['original', 'quote'];
 const LIKE_SOURCE_FALLBACK = 'home_feed';
+const VIEW_WINDOW_MS = 30 * 60 * 1000;
+const recentPostViews = new Map();
+
+function getPagination(query = {}, defaults = {}) {
+  const page = Math.max(1, parseInt(query.page, 10) || defaults.page || 1);
+  const limit = Math.max(1, Math.min(100, parseInt(query.limit, 10) || defaults.limit || 20));
+  return { page, limit, skip: (page - 1) * limit };
+}
+
+function makePagination(page, limit, total) {
+  return {
+    page,
+    limit,
+    total,
+    pages: Math.ceil(total / limit)
+  };
+}
+
+function hasPostMediaQuery() {
+  return {
+    'content.media.0': { $exists: true }
+  };
+}
+
+function getViewIdentity(req) {
+  const userId = req.user?._id?.toString();
+  if (userId) return `user:${userId}`;
+
+  const deviceId = req.headers['x-device-id'] || req.headers['x-client-id'];
+  if (deviceId) return `device:${String(deviceId).slice(0, 120)}`;
+
+  return `ip:${req.ip || req.headers['x-forwarded-for'] || 'unknown'}`;
+}
+
+function getEngagementMetadata(req, source) {
+  return {
+    source: source || req.body?.source || req.query?.source,
+    sessionId: req.headers['x-session-id'],
+    deviceId: req.headers['x-device-id'] || req.headers['x-client-id'],
+    ipAddress: req.ip,
+    userAgent: req.headers['user-agent']
+  };
+}
 
 function toClientPost(post, countOverrides = {}) {
   const plainPost = typeof post?.toObject === 'function' ? post.toObject() : post;
@@ -299,6 +344,70 @@ async function attachViewerStateToPosts(posts, userId) {
   }));
 }
 
+async function findProfileUserByUsername(username, next) {
+  const user = await User.findOne({ username, accountStatus: 'active' });
+  if (!user) {
+    next(new AppError('User not found', 404));
+    return null;
+  }
+
+  return user;
+}
+
+async function ensureProfileVisible(profileUserId, viewerId, next) {
+  if (!viewerId) return true;
+
+  const isBlocked = await Block.isBlocked(viewerId, profileUserId);
+  if (isBlocked) {
+    next(new AppError('Cannot view this user profile', 403));
+    return false;
+  }
+
+  return true;
+}
+
+async function listProfilePosts({ profileUser, viewerId, query, res, type }) {
+  const { page, limit, skip } = getPagination(query);
+  const postQuery = {
+    author: profileUser._id,
+    status: 'active'
+  };
+
+  if (!viewerId || viewerId.toString() !== profileUser._id.toString()) {
+    postQuery.visibility = 'public';
+  }
+
+  if (type === 'media') {
+    postQuery.postType = { $in: FEED_VISIBLE_POST_TYPES };
+    Object.assign(postQuery, hasPostMediaQuery());
+  } else if (type === 'reposts') {
+    postQuery.postType = { $in: REPOST_TYPES };
+  }
+
+  const [posts, total] = await Promise.all([
+    Post.find(postQuery)
+      .populate('author', 'username profile.displayName profile.avatar isEmailVerified')
+      .populate({
+        path: 'originalPost',
+        populate: { path: 'author', select: 'username profile.displayName profile.avatar isEmailVerified' }
+      })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .skip(skip),
+    Post.countDocuments(postQuery)
+  ]);
+
+  const shapedPosts = await attachViewerStateToPosts(posts, viewerId);
+
+  return res.status(200).json({
+    success: true,
+    data: { posts: shapedPosts },
+    meta: {
+      pagination: makePagination(page, limit, total)
+    }
+  });
+}
+
 // ════════════════════════════════════════════════
 // POST CREATION
 // ════════════════════════════════════════════════
@@ -529,6 +638,13 @@ exports.createRepost = catchAsync(async (req, res, next) => {
     repost = canonicalRepost;
   }
   const updatedOriginalPost = await syncPostCounters(postId, { reposts: true });
+  await algorithmService.safeRecordEngagement({
+    userId,
+    post: originalPost,
+    action: quoteText ? 'quote' : 'repost',
+    metadata: getEngagementMetadata(req, 'repost'),
+    updatePost: true
+  });
 
   // Populate details
   await repost.populate([
@@ -580,7 +696,7 @@ exports.createRepost = catchAsync(async (req, res, next) => {
 
 // Create a reply/comment
 exports.createReply = catchAsync(async (req, res, next) => {
-  const { postId, text } = req.body || {};
+  const { postId, text, replyToUserId } = req.body || {};
   const userId = req.user._id;
 
   if (!text || text.trim() === '') {
@@ -620,6 +736,26 @@ exports.createReply = catchAsync(async (req, res, next) => {
 
   // Update parent post comment counter
   const updatedParentPost = await syncPostCounters(postId, { comments: true });
+  await algorithmService.safeRecordEngagement({
+    userId,
+    post: parentPost,
+    action: 'reply',
+    metadata: getEngagementMetadata(req, 'reply'),
+    updatePost: true
+  });
+
+  if (
+    replyToUserId &&
+    parentPost.author.equals(userId) &&
+    replyToUserId.toString() !== userId.toString()
+  ) {
+    await algorithmService.recordProfileInteraction({
+      viewerId: replyToUserId,
+      authorId: userId,
+      action: 'author_replied',
+      metadata: getEngagementMetadata(req, 'author_replied')
+    });
+  }
 
   // Populate details
   await reply.populate([
@@ -739,16 +875,18 @@ exports.getHomeFeed = catchAsync(async (req, res, next) => {
   const parsedPage = Math.max(1, parseInt(page, 10) || 1);
   const parsedLimit = Math.max(1, parseInt(limit, 10) || 20);
 
-  const result = await Post.getHomeFeed(userId, { page: parsedPage, limit: parsedLimit });
-  const postsWithLikeStatus = await attachViewerStateToPosts(result.posts, userId);
+  const result = await feedService.getHomeFeed(userId, {
+    page: parsedPage,
+    limit: parsedLimit
+  });
 
   res.status(200).json({
     status: 'success',
     success: true,
     data: {
-      feed: postsWithLikeStatus,
-      items: postsWithLikeStatus,
-      posts: postsWithLikeStatus,
+      feed: result.items || [],
+      items: result.items || [],
+      posts: result.items || [],
       pagination: result.pagination
     }
   });
@@ -761,8 +899,12 @@ exports.getSphereFeed = catchAsync(async (req, res, next) => {
   const parsedPage = Math.max(1, parseInt(page, 10) || 1);
   const parsedLimit = Math.max(1, parseInt(limit, 10) || 20);
 
-  const result = await Post.getSphereFeed(userId, { page: parsedPage, limit: parsedLimit, mode });
-  const feed = await attachViewerStateToPosts(result.posts, userId);
+  const result = await feedService.getSphereFeed(userId, {
+    page: parsedPage,
+    limit: parsedLimit,
+    mode
+  });
+  const feed = result.items || [];
 
   res.status(200).json({
     status: 'success',
@@ -892,6 +1034,153 @@ exports.getPost = catchAsync(async (req, res, next) => {
   });
 });
 
+// Track a meaningful post view with a short per-identity window
+exports.trackPostView = catchAsync(async (req, res, next) => {
+  const { postId } = req.params;
+  const viewerId = req.user?._id;
+
+  const post = await Post.findById(postId);
+  if (!post || post.status === 'deleted') {
+    return next(new AppError('Post not found', 404));
+  }
+
+  if (viewerId) {
+    const canView = await post.canBeViewedBy(viewerId);
+    if (!canView) {
+      return next(new AppError('Post not found', 404));
+    }
+  } else if (post.visibility !== 'public') {
+    return next(new AppError('Post not found', 404));
+  }
+
+  const isAuthorView = viewerId && post.author.equals(viewerId);
+  const identity = getViewIdentity(req);
+  const key = `${postId}:${identity}`;
+  const now = Date.now();
+  const previousViewAt = recentPostViews.get(key) || 0;
+  const shouldCount = !isAuthorView && now - previousViewAt >= VIEW_WINDOW_MS;
+
+  if (shouldCount) {
+    recentPostViews.set(key, now);
+    post.engagement.views += 1;
+    await algorithmService.updatePostAlgorithmMetrics(post, 'view');
+    await post.save({ validateBeforeSave: false });
+    await algorithmService.safeRecordEngagement({
+      userId: viewerId,
+      post,
+      action: 'view',
+      metadata: getEngagementMetadata(req, 'view'),
+      updatePost: false
+    });
+  }
+
+  if (recentPostViews.size > 10000) {
+    const cutoff = now - VIEW_WINDOW_MS;
+    for (const [viewKey, timestamp] of recentPostViews.entries()) {
+      if (timestamp < cutoff) recentPostViews.delete(viewKey);
+    }
+  }
+
+  res.status(200).json({
+    success: true,
+    data: {
+      postId,
+      viewsCount: post.engagement.views,
+      counted: shouldCount
+    }
+  });
+});
+
+// Track lightweight ranking/interest signals from the app.
+exports.trackPostEngagement = catchAsync(async (req, res, next) => {
+  const { postId } = req.params;
+  const viewerId = req.user._id;
+  const { action, dwellSeconds = 0 } = req.body || {};
+  const allowedActions = new Set([
+    'dwell',
+    'profile_click',
+    'link_click',
+    'hide',
+    'not_interested',
+    'impression'
+  ]);
+
+  if (!allowedActions.has(action)) {
+    return next(new AppError('Unsupported engagement action', 400));
+  }
+
+  const post = await Post.findById(postId);
+  if (!post || post.status === 'deleted') {
+    return next(new AppError('Post not found', 404));
+  }
+
+  const canView = await post.canBeViewedBy(viewerId);
+  if (!canView) {
+    return next(new AppError('Post not found', 404));
+  }
+
+  const seconds = Math.max(0, Math.min(Number(dwellSeconds) || 0, 300));
+  await algorithmService.recordEngagement({
+    userId: viewerId,
+    post,
+    action,
+    dwellSeconds: seconds,
+    metadata: getEngagementMetadata(req, action),
+    updatePost: true
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Engagement recorded',
+    data: {
+      postId,
+      action,
+      algorithm: {
+        impressions: post.algorithm?.impressions || 0,
+        avgDwellSeconds: post.algorithm?.avgDwellSeconds || 0,
+        hideRate: post.algorithm?.hideRate || 0,
+        notInterestedRate: post.algorithm?.notInterestedRate || 0
+      }
+    }
+  });
+});
+
+exports.trackPostLinkClick = catchAsync(async (req, res, next) => {
+  const { postId } = req.params;
+  const viewerId = req.user._id;
+  const { url } = req.body || {};
+  const post = await Post.findById(postId);
+
+  if (!post || post.status === 'deleted') {
+    return next(new AppError('Post not found', 404));
+  }
+
+  const canView = await post.canBeViewedBy(viewerId);
+  if (!canView) {
+    return next(new AppError('Post not found', 404));
+  }
+
+  await algorithmService.recordEngagement({
+    userId: viewerId,
+    post,
+    action: 'link_click',
+    metadata: {
+      ...getEngagementMetadata(req, 'link_click'),
+      url: typeof url === 'string' ? url.slice(0, 500) : undefined
+    },
+    updatePost: true
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Link click recorded',
+    data: {
+      postId,
+      linkClicks: post.algorithm?.linkClicks || 0
+    }
+  });
+});
+
 // Get post thread (with replies)
 exports.getPostThread = catchAsync(async (req, res, next) => {
   const { postId } = req.params;
@@ -952,8 +1241,16 @@ exports.getPostThread = catchAsync(async (req, res, next) => {
 // Get user's posts (profile feed)
 exports.getUserPosts = catchAsync(async (req, res, next) => {
   const { username } = req.params;
-  const { page = 1, limit = 20, includeReplies, includeReposts } = req.query;
+  const { page = 1, limit = 20, includeReplies, includeReposts, type } = req.query;
   const viewerId = req.user?._id;
+
+  if (type === 'media') {
+    return exports.getUserMediaPosts(req, res, next);
+  }
+
+  if (type === 'reposts') {
+    return exports.getUserReposts(req, res, next);
+  }
 
   // Find user
   const user = await User.findOne({ username });
@@ -1048,6 +1345,15 @@ exports.toggleLike = catchAsync(async (req, res, next) => {
 
   const updatedPost = await syncPostCounters(postId, { likes: true });
   const likesCount = updatedPost?.engagement?.likes || 0;
+  if (createdLike) {
+    await algorithmService.safeRecordEngagement({
+      userId,
+      post,
+      action: 'like',
+      metadata: getEngagementMetadata(req, likeSource),
+      updatePost: false
+    });
+  }
 
   if (createdLike && !post.author.equals(userId)) {
     await createNotification({
@@ -1147,6 +1453,15 @@ exports.likeReply = catchAsync(async (req, res, next) => {
 
   const updatedReply = await syncPostCounters(replyId, { likes: true });
   const likesCount = updatedReply?.engagement?.likes || 0;
+  if (createdLike) {
+    await algorithmService.safeRecordEngagement({
+      userId,
+      post: reply,
+      action: 'like',
+      metadata: getEngagementMetadata(req, likeSource),
+      updatePost: false
+    });
+  }
 
   if (createdLike && !reply.author.equals(userId)) {
     await createNotification({
@@ -1236,6 +1551,183 @@ exports.getPostLikes = catchAsync(async (req, res, next) => {
   });
 });
 
+// Get user's media posts for profile media tab
+exports.getUserMediaPosts = catchAsync(async (req, res, next) => {
+  const { username } = req.params;
+  const viewerId = req.user?._id;
+  const user = await findProfileUserByUsername(username, next);
+  if (!user) return null;
+
+  const canView = await ensureProfileVisible(user._id, viewerId, next);
+  if (!canView) return null;
+
+  return listProfilePosts({
+    profileUser: user,
+    viewerId,
+    query: req.query,
+    res,
+    type: 'media'
+  });
+});
+
+// Get user's reposts and quote reposts for profile reposts tab
+exports.getUserReposts = catchAsync(async (req, res, next) => {
+  const { username } = req.params;
+  const viewerId = req.user?._id;
+  const user = await findProfileUserByUsername(username, next);
+  if (!user) return null;
+
+  const canView = await ensureProfileVisible(user._id, viewerId, next);
+  if (!canView) return null;
+
+  return listProfilePosts({
+    profileUser: user,
+    viewerId,
+    query: req.query,
+    res,
+    type: 'reposts'
+  });
+});
+
+// Get users who reposted a post
+exports.getPostReposts = catchAsync(async (req, res, next) => {
+  const { postId } = req.params;
+  const { page, limit, skip } = getPagination(req.query);
+
+  const post = await Post.findById(postId);
+  if (!post || post.status === 'deleted') {
+    return next(new AppError('Post not found', 404));
+  }
+
+  if (req.user?._id) {
+    const canView = await post.canBeViewedBy(req.user._id);
+    if (!canView) return next(new AppError('Post not found', 404));
+  } else if (post.visibility !== 'public') {
+    return next(new AppError('Post not found', 404));
+  }
+
+  const query = {
+    originalPost: postId,
+    postType: { $in: REPOST_TYPES },
+    status: 'active'
+  };
+
+  const [reposts, total] = await Promise.all([
+    Post.find(query)
+      .populate('author', 'username profile.displayName profile.avatar isEmailVerified')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .skip(skip)
+      .select('author postType createdAt content'),
+    Post.distinct('author', query).then((authors) => authors.length)
+  ]);
+
+  const seenUsers = new Set();
+  const uniqueReposts = reposts
+    .filter((repost) => {
+      const key = repost.author?._id?.toString() || repost.author?.toString();
+      if (!key || seenUsers.has(key)) return false;
+      seenUsers.add(key);
+      return true;
+    })
+    .map((repost) => ({
+      user: repost.author,
+      type: repost.postType,
+      createdAt: repost.createdAt
+    }));
+
+  res.status(200).json({
+    success: true,
+    data: { reposts: uniqueReposts },
+    meta: {
+      pagination: makePagination(page, limit, total)
+    }
+  });
+});
+
+// Get quote reposts of a post
+exports.getPostQuotes = catchAsync(async (req, res, next) => {
+  const { postId } = req.params;
+  const { page, limit, skip } = getPagination(req.query);
+
+  const post = await Post.findById(postId);
+  if (!post || post.status === 'deleted') {
+    return next(new AppError('Post not found', 404));
+  }
+
+  if (req.user?._id) {
+    const canView = await post.canBeViewedBy(req.user._id);
+    if (!canView) return next(new AppError('Post not found', 404));
+  } else if (post.visibility !== 'public') {
+    return next(new AppError('Post not found', 404));
+  }
+
+  const query = {
+    originalPost: postId,
+    postType: 'quote',
+    status: 'active'
+  };
+
+  const [quotes, total] = await Promise.all([
+    Post.find(query)
+      .populate('author', 'username profile.displayName profile.avatar isEmailVerified')
+      .populate({
+        path: 'originalPost',
+        populate: { path: 'author', select: 'username profile.displayName profile.avatar isEmailVerified' }
+      })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .skip(skip),
+    Post.countDocuments(query)
+  ]);
+
+  const shapedQuotes = await attachViewerStateToPosts(quotes, req.user?._id);
+
+  res.status(200).json({
+    success: true,
+    data: { posts: shapedQuotes, quotes: shapedQuotes },
+    meta: {
+      pagination: makePagination(page, limit, total)
+    }
+  });
+});
+
+// Get posts liked by current user
+exports.getMyLikedPosts = catchAsync(async (req, res) => {
+  const userId = req.user._id;
+  const { page, limit, skip } = getPagination(req.query);
+
+  const [likes, total] = await Promise.all([
+    Like.find({ user: userId })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .skip(skip)
+      .populate({
+        path: 'post',
+        match: { status: 'active' },
+        populate: [
+          { path: 'author', select: 'username profile.displayName profile.avatar isEmailVerified' },
+          {
+            path: 'originalPost',
+            populate: { path: 'author', select: 'username profile.displayName profile.avatar isEmailVerified' }
+          }
+        ]
+      }),
+    Like.countDocuments({ user: userId })
+  ]);
+
+  const posts = likes.map((like) => like.post).filter(Boolean);
+  const shapedPosts = await attachViewerStateToPosts(posts, userId);
+
+  res.status(200).json({
+    success: true,
+    data: { posts: shapedPosts },
+    meta: {
+      pagination: makePagination(page, limit, total)
+    }
+  });
+});
+
 // Bookmark post (idempotent create)
 exports.toggleBookmark = catchAsync(async (req, res, next) => {
   const { postId } = req.params;
@@ -1265,6 +1757,16 @@ exports.toggleBookmark = catchAsync(async (req, res, next) => {
       }
       await getCanonicalBookmark(userId, postId);
     }
+  }
+
+  if (createdBookmark) {
+    await algorithmService.safeRecordEngagement({
+      userId,
+      post,
+      action: 'bookmark',
+      metadata: getEngagementMetadata(req, 'bookmark'),
+      updatePost: true
+    });
   }
 
   res.status(200).json({

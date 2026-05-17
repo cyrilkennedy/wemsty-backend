@@ -322,6 +322,36 @@ exports.checkFollowStatus = catchAsync(async (req, res, next) => {
 // BLOCK SYSTEM
 // ════════════════════════════════════════════════
 
+exports.getRelationshipStatus = catchAsync(async (req, res, next) => {
+  const viewerId = req.user._id;
+  const { userId } = req.params;
+
+  const user = await User.findById(userId).select('_id accountStatus');
+  if (!user || user.accountStatus !== 'active') {
+    return next(new AppError('User not found', 404));
+  }
+
+  const [following, followedBy, muted, blocked, blockedBy] = await Promise.all([
+    Follow.findOne({ follower: viewerId, following: userId }).select('status'),
+    Follow.findOne({ follower: userId, following: viewerId }).select('status'),
+    Mute.exists({ muter: viewerId, muted: userId }),
+    Block.exists({ blocker: viewerId, blocked: userId }),
+    Block.exists({ blocker: userId, blocked: viewerId })
+  ]);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      following: following?.status === 'ACCEPTED',
+      followedBy: followedBy?.status === 'ACCEPTED',
+      pending: following?.status === 'PENDING',
+      muted: !!muted,
+      blocked: !!blocked,
+      blockedBy: !!blockedBy
+    }
+  });
+});
+
 // Block a user
 exports.blockUser = catchAsync(async (req, res, next) => {
   const blockerId = req.user._id;

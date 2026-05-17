@@ -15,6 +15,7 @@
   - [HTTP Status Codes](#http-status-codes)
   - [Rate Limits](#rate-limits)
 - [Endpoints](#endpoints)
+  - [Current Mounted API Surface](#current-mounted-api-surface)
   - [Health](#health)
   - [Authentication Endpoints](#authentication-endpoints)
   - [Users](#users)
@@ -27,6 +28,8 @@
   - [Feed](#feed)
   - [Trending](#trending)
   - [Search](#search)
+  - [Media & Universal Assets](#media--universal-assets)
+  - [Queue Dashboard](#queue-dashboard)
   - [Payments](#payments)
   - [Moderation](#moderation)
   - [Mobile Updates](#mobile-updates)
@@ -69,7 +72,7 @@ If you are new to JWT auth, start with:
 ## Local Setup Checklist
 
 Before testing endpoints, confirm:
-- API server is running on `http://api.wemsty.com`
+- API server is running on `https://api.wemsty.com`
 - MongoDB is connected (check `GET /health`)
 - You have a test account (or create one with `POST /auth/signup`)
 - You are sending JSON with `Content-Type: application/json`
@@ -99,7 +102,7 @@ Use this exact flow when onboarding a new frontend dev.
 1. Signup
 
 ```bash
-curl -X POST http://api.wemsty.com/api/auth/signup ^
+curl -X POST https://api.wemsty.com/api/auth/signup ^
   -H "Content-Type: application/json" ^
   -d "{\"email\":\"junior@example.com\",\"username\":\"junior_dev\",\"password\":\"password123\"}"
 ```
@@ -107,7 +110,7 @@ curl -X POST http://api.wemsty.com/api/auth/signup ^
 2. Login and copy `data.accessToken` from the response
 
 ```bash
-curl -X POST http://api.wemsty.com/api/auth/login ^
+curl -X POST https://api.wemsty.com/api/auth/login ^
   -H "Content-Type: application/json" ^
   -d "{\"email\":\"junior@example.com\",\"password\":\"password123\"}"
 ```
@@ -115,14 +118,14 @@ curl -X POST http://api.wemsty.com/api/auth/login ^
 3. Get my profile
 
 ```bash
-curl http://api.wemsty.com/api/users/profile ^
+curl https://api.wemsty.com/api/users/profile ^
   -H "Authorization: Bearer <accessToken>"
 ```
 
 4. Update profile (bio + avatar URL)
 
 ```bash
-curl -X PATCH http://api.wemsty.com/api/users/profile ^
+curl -X PATCH https://api.wemsty.com/api/users/profile ^
   -H "Content-Type: application/json" ^
   -H "Authorization: Bearer <accessToken>" ^
   -d "{\"profile\":{\"displayName\":\"Junior Dev\",\"bio\":\"Building with Wemsty API\",\"avatar\":\"https://example.com/avatar.jpg\"}}"
@@ -137,7 +140,7 @@ curl -X PATCH http://api.wemsty.com/api/users/profile ^
 All routes are relative to:
 
 ```text
-http://api.wemsty.com/api
+https://api.wemsty.com/api
 ```
 
 ### Authentication
@@ -164,9 +167,18 @@ Tokens are returned in response bodies and also set as HTTP-only cookies.
 
 ### Response Shapes in This Codebase
 
-This backend currently uses **two success response styles** depending on module.
+The standard response shape for new and production-hardened endpoints is:
 
-Style A:
+```json
+{
+  "success": true,
+  "message": "Operation completed successfully",
+  "data": {},
+  "meta": {}
+}
+```
+
+Some older controllers still return this legacy success shape:
 
 ```json
 {
@@ -176,17 +188,18 @@ Style A:
 }
 ```
 
-Style B:
+Standard error shape:
 
 ```json
 {
-  "success": true,
-  "message": "Operation completed successfully",
-  "data": {}
+  "success": false,
+  "message": "Validation or request error",
+  "code": "VALIDATION_ERROR",
+  "errors": []
 }
 ```
 
-Error responses are usually one of these:
+Some legacy errors may still use:
 
 ```json
 {
@@ -195,8 +208,11 @@ Error responses are usually one of these:
 }
 ```
 
+Development-only server errors may include stack traces:
+
 ```json
 {
+  "success": false,
   "status": "error",
   "message": "Server error",
   "stack": "Only in development"
@@ -211,17 +227,21 @@ List endpoints typically accept:
 - `page` (default `1`)
 - `limit` (default `20`)
 
-Paginated responses include:
+Paginated responses usually include either `pagination` in `data` or `meta.pagination`:
 
 ```json
 {
-  "status": "success",
-  "data": [],
-  "pagination": {
-    "page": 1,
-    "limit": 20,
-    "total": 100,
-    "pages": 5
+  "success": true,
+  "data": {
+    "items": []
+  },
+  "meta": {
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 100,
+      "pages": 5
+    }
   }
 }
 ```
@@ -258,24 +278,232 @@ When throttled, the API returns `429` and a `retryAfter` field.
 
 ## Endpoints
 
+### Current Mounted API Surface
+
+All mounted routes below are relative to:
+
+```text
+https://api.wemsty.com/api
+```
+
+Root service route:
+
+| Method | Endpoint | Access | Purpose |
+|--------|----------|--------|---------|
+| GET | `/` | Public | API welcome JSON with version |
+
+Health and operations:
+
+| Method | Endpoint | Access | Purpose |
+|--------|----------|--------|---------|
+| GET | `/health` | Public | JSON health for API clients, HTML status page for browsers |
+| GET | `/health/deep` | Public or token-protected | Deep health, protected by `x-healthcheck-token` when `HEALTHCHECK_TOKEN` is set |
+| ANY | `/queues/*` | Private dashboard token | Bull Board queue dashboard, requires `x-queue-dashboard-token` or bearer `QUEUE_DASHBOARD_TOKEN` |
+
+Authentication:
+
+| Method | Endpoint | Access | Purpose |
+|--------|----------|--------|---------|
+| POST | `/auth/signup` | Public | Register account |
+| POST | `/auth/login` | Public | Login |
+| POST | `/auth/google` | Public | Google OAuth login |
+| POST | `/auth/refresh` | Public + refresh token | Refresh access token |
+| POST | `/auth/forgot-password` | Public | Legacy password reset request |
+| POST | `/auth/reset-password` | Public | Legacy password reset completion |
+| POST | `/auth/verify-email` | Public | Verify email token |
+| POST | `/auth/password-reset/request` | Public | Send password reset OTP |
+| POST | `/auth/password-reset/verify-otp` | Public | Verify OTP and return reset token |
+| POST | `/auth/password-reset/reset` | Public | Reset with `resetToken + newPassword` or `email + otp + newPassword` |
+| POST | `/auth/password-reset/feedback` | Public | Submit reset feedback |
+| POST | `/auth/password-reset/resend-otp` | Public | Resend reset OTP |
+| GET | `/auth/me` | Private | Current authenticated user |
+| POST | `/auth/logout` | Private | Logout current session |
+| POST | `/auth/logout-all` | Private | Logout all sessions |
+| GET | `/auth/sessions` | Private | List active sessions without token hashes |
+| DELETE | `/auth/sessions/:sessionId` | Private | Revoke one session |
+| POST | `/auth/change-password` | Private | Change password while logged in |
+| POST | `/auth/resend-verification` | Private | Resend verification email |
+
+Users and social:
+
+| Method | Endpoint | Access | Purpose |
+|--------|----------|--------|---------|
+| GET | `/users/handle/:username` | Public optional auth | Public profile |
+| GET | `/users/profile` | Private | Own profile |
+| PATCH | `/users/profile` | Private | Update own profile |
+| PATCH | `/users/feed-preferences` | Private | Update onboarding and muted topics for the feed algorithm |
+| POST | `/users/:userId/profile-click` | Private | Track profile visit/click affinity |
+| DELETE | `/users/account` | Private | Delete/deactivate own account |
+| GET | `/users` | Admin/moderator | Admin user list |
+| PATCH | `/users/:id/role` | Admin | Update role |
+| PATCH | `/users/:id/status` | Admin/moderator | Update status |
+| POST | `/social/follow/:userId` | Private | Follow user |
+| DELETE | `/social/follow/:userId` | Private | Unfollow user |
+| GET | `/social/follow/status/:userId` | Private | Follow status |
+| GET | `/social/follow-requests` | Private | Pending follow requests |
+| POST | `/social/follow-requests/:requestId/accept` | Private | Accept follow request |
+| POST | `/social/follow-requests/:requestId/reject` | Private | Reject follow request |
+| GET | `/social/followers/:userId` | Private | Followers |
+| GET | `/social/following/:userId` | Private | Following |
+| GET | `/social/mutual/:userId` | Private | Mutual followers |
+| GET | `/social/suggestions` | Private | Follow suggestions |
+| GET | `/social/relationship/:userId` | Private | Combined follow/mute/block profile button state |
+| POST | `/social/block/:userId` | Private | Block user |
+| DELETE | `/social/block/:userId` | Private | Unblock user |
+| GET | `/social/blocked` | Private | Blocked users |
+| POST | `/social/mute/:userId` | Private | Mute user |
+| DELETE | `/social/mute/:userId` | Private | Unmute user |
+| GET | `/social/muted` | Private | Muted users |
+| GET | `/social/relationship/:userId` | Private | Combined follow/mute/block relationship status |
+
+Posts and feeds:
+
+| Method | Endpoint | Access | Purpose |
+|--------|----------|--------|---------|
+| GET | `/posts/trending` | Public optional auth | Trending posts |
+| GET | `/posts/categories` | Public | Post categories |
+| GET | `/posts/sphere` | Public optional auth | Public Sphere feed |
+| GET | `/posts/category/:categorySlug` | Public optional auth | Category feed |
+| GET | `/posts/search` | Public optional auth | Post search |
+| GET | `/posts/likes/me` | Private | Current user's liked posts |
+| GET | `/posts/:postId` | Public optional auth | Single post |
+| GET | `/posts/:postId/thread` | Public optional auth | Post thread |
+| GET | `/posts/:postId/reposts` | Public optional auth | Users who reposted the post |
+| GET | `/posts/:postId/quotes` | Public optional auth | Quote reposts for the post |
+| POST | `/posts/:postId/view` | Public optional auth | Track meaningful post view |
+| POST | `/posts/:postId/engagement` | Private | Track feed algorithm signals such as dwell, hide, not interested, profile click, and link click |
+| POST | `/posts/:postId/link-click` | Private | Track outbound link click for ranking |
+| GET | `/posts/user/:username` | Public optional auth | User profile post feed |
+| GET | `/posts/user/:username/media` | Public optional auth | User media posts |
+| GET | `/posts/user/:username/reposts` | Public optional auth | User reposts and quote reposts |
+| GET | `/posts/feed/home` | Private deprecated | Compatibility home feed; prefer `/feed/home` |
+| GET | `/posts/feed/sphere` | Private deprecated | Compatibility Sphere feed; prefer `/feed/sphere` |
+| POST | `/posts` | Private | Create post |
+| POST | `/posts/repost` | Private | Create/update repost or quote |
+| DELETE | `/posts/repost/:postId` | Private | Remove repost/quote |
+| POST | `/posts/reply` | Private | Create reply/comment |
+| PATCH | `/posts/reply/:replyId` | Private | Edit reply/comment |
+| DELETE | `/posts/reply/:replyId` | Private | Delete reply/comment |
+| POST | `/posts/reply/:replyId/like` | Private | Like reply idempotently |
+| DELETE | `/posts/reply/:replyId/like` | Private | Unlike reply idempotently |
+| POST | `/posts/:postId/like` | Private | Like post idempotently |
+| DELETE | `/posts/:postId/like` | Private | Unlike post idempotently |
+| GET | `/posts/:postId/likes` | Private | List post likes |
+| POST | `/posts/:postId/bookmark` | Private | Bookmark idempotently |
+| DELETE | `/posts/:postId/bookmark` | Private | Remove bookmark idempotently |
+| GET | `/posts/bookmarks/me` | Private | Own bookmarks |
+| DELETE | `/posts/:postId` | Private | Delete own post |
+| GET | `/feed/home` | Private | Official home feed |
+| POST | `/feed/home/refresh` | Private | Refresh feed cache |
+| GET | `/feed/sphere` | Private | Official Sphere feed |
+| GET | `/feed/sphere/category/:category` | Private | Official category feed |
+| GET | `/feed/ranking/:postId` | Private | Ranking/debug info |
+
+Circles, messages, notifications, search, payments, moderation, and mobile:
+
+| Method | Endpoint | Access | Purpose |
+|--------|----------|--------|---------|
+| GET | `/circles` | Public | List circles |
+| GET | `/circles/view/:identifier` | Public optional auth | View circle |
+| GET | `/circles/me/memberships` | Private | Own circle memberships |
+| POST | `/circles` | Private | Create circle |
+| POST | `/circles/invites/:code/redeem` | Private | Redeem invite |
+| GET | `/circles/:circleId/members` | Private | Circle members |
+| GET | `/circles/:circleId/channels` | Private | Circle channels |
+| GET | `/circles/:circleId/roles` | Private | Circle roles |
+| POST | `/circles/:circleId/roles` | Private | Create role |
+| POST | `/circles/:circleId/roles/assign` | Private | Assign/remove role |
+| GET | `/circles/:circleId/invites` | Private | Circle invites |
+| POST | `/circles/:circleId/invites` | Private | Create invite |
+| POST | `/circles/:circleId/join` | Private | Join circle |
+| POST | `/circles/:circleId/leave` | Private | Leave circle |
+| POST | `/circles/:circleId/channels` | Private | Create channel |
+| POST | `/circles/:circleId/channels/:channelId/pin` | Private | Pin/unpin channel |
+| POST | `/circles/:circleId/posts/:postId/pin` | Private | Pin/unpin post |
+| GET | `/messages/channels/:circleId/:channelId` | Private | Channel messages |
+| POST | `/messages/channels/:circleId/:channelId` | Private | Send channel message |
+| GET | `/messages/reads` | Private | Read states |
+| POST | `/messages/reads` | Private | Update read state |
+| GET | `/messages/dm/conversations` | Private | DM conversations |
+| GET | `/messages/dm/conversations/search` | Private | Search DM conversations |
+| POST | `/messages/dm/conversations/:userId` | Private | Get/create DM conversation |
+| GET | `/messages/dm/conversations/:conversationId/messages` | Private | DM messages |
+| POST | `/messages/dm/conversations/:conversationId/messages` | Private | Send DM |
+| GET | `/notifications` | Private | Notification list |
+| GET | `/notifications/unread-count` | Private | Unread count |
+| PATCH | `/notifications/read-all` | Private | Mark all read |
+| PATCH | `/notifications/:notificationId/read` | Private | Mark one read |
+| GET | `/notifications/preferences` | Private | Notification preferences |
+| PUT | `/notifications/preferences` | Private | Update preferences |
+| GET | `/notifications/preferences/defaults` | Private | Defaults |
+| POST | `/notifications/preferences/reset` | Private | Reset preferences |
+| POST | `/notifications/preferences/enable-all` | Private | Enable all |
+| POST | `/notifications/preferences/disable-all` | Private | Disable all |
+| GET | `/notifications/preferences/summary` | Private | Preference summary |
+| POST | `/notifications/preferences/test` | Private | Test notification |
+| GET | `/search` | Public | Unified search |
+| GET | `/trending/hashtags` | Public | Trending hashtags |
+| GET | `/trending/topics` | Public | Trending topics |
+| GET | `/trending/categories` | Public | Trending categories |
+| GET | `/trending/stats` | Public | Trending stats |
+| GET | `/trending/category/:category` | Private | Category trending |
+| GET | `/trending/hashtag/:tag` | Private | Hashtag details |
+| GET | `/trending/topic/:topic{/:type}` | Private | Topic details |
+| GET | `/trending/region/:region` | Private | Regional trending |
+| GET | `/trending/search` | Private | Trending search |
+| POST | `/payments/webhook` | Public Paystack signature | Paystack webhook |
+| POST | `/payments/initialize` | Private | Initialize payment |
+| GET | `/payments/verify/:reference` | Private | Verify payment |
+| GET | `/payments/history` | Private | Payment history |
+| GET | `/moderation/report-reasons` | Public | Report reason list |
+| POST | `/moderation/reports` | Private | Create report |
+| GET | `/moderation/reports` | Admin/moderator | List reports |
+| POST | `/moderation/reports/:reportId/actions` | Admin/moderator | Take moderation action |
+| GET | `/moderation/audit-logs` | Admin/moderator | Audit logs |
+| GET | `/mobile/update-check` | Public | Mobile update check |
+| GET | `/mobile/update-download/:assetId` | Public | Proxy update asset download |
+
+Media routes are documented in detail in [Media & Universal Assets](#media--universal-assets).
+
+---
+
 ### Health
 
 #### GET `/health`
-Check API and infrastructure status.
+Check public API status.
 
 Access: `Public`
 
-Example response:
+Behavior:
+- `Accept: application/json` returns JSON.
+- Browser requests with `Accept: text/html` return an animated "Wemsty is running" page.
+- This endpoint does not expose MongoDB/Redis/Kafka internals.
+
+Example JSON response:
 
 ```json
 {
-  "status": "ok",
-  "message": "Wemsty Backend v4.0 is running",
-  "environment": "development",
-  "timestamp": "2024-01-01T00:00:00.000Z",
-  "database": "MongoDB Connected"
+  "success": true,
+  "message": "Wemsty Backend is running",
+  "data": {
+    "version": "4.0",
+    "environment": "production",
+    "uptime": 12345,
+    "timestamp": "2026-05-17T00:00:00.000Z"
+  }
 }
 ```
+
+#### GET `/health/deep`
+Check deeper infrastructure status.
+
+Access: `Public` unless `HEALTHCHECK_TOKEN` is configured. When configured, send:
+
+```http
+x-healthcheck-token: <HEALTHCHECK_TOKEN>
+```
+
+Deep health may return `200` for healthy/degraded states or `503` when MongoDB is unavailable.
 
 #### Frontend Engineer Expectations
 - Call this endpoint on app startup and before running smoke/integration tests.
@@ -295,6 +523,8 @@ Example response:
 | GET | `/auth/me` | Private | Get current authenticated user |
 | POST | `/auth/logout` | Private | Logout current device/session |
 | POST | `/auth/logout-all` | Private | Logout all active sessions |
+| GET | `/auth/sessions` | Private | List active device sessions |
+| DELETE | `/auth/sessions/:sessionId` | Private | Revoke a specific session |
 | POST | `/auth/change-password` | Private | Change password while logged in |
 | POST | `/auth/forgot-password` | Public | Legacy reset request flow |
 | POST | `/auth/reset-password` | Public | Legacy reset completion flow |
@@ -383,6 +613,16 @@ OTP reset flow payloads:
 }
 ```
 
+Direct OTP reset also works on the same reset endpoint:
+
+```json
+{
+  "email": "user@example.com",
+  "otp": "123456",
+  "newPassword": "new_password_at_least_8_chars"
+}
+```
+
 #### Detailed OTP Reset Flow (Steps)
 
 **Step 1: Request OTP**
@@ -406,8 +646,23 @@ Response:
 
 **Step 3: Complete Reset**
 `POST /auth/password-reset/reset`
-Payload: `{"resetToken": "<token_from_step_2>", "newPassword": "newpassword123"}`
+Payload option A: `{"resetToken": "<token_from_step_2>", "newPassword": "newpassword123"}`
+Payload option B: `{"email": "user@example.com", "otp": "123456", "newPassword": "newpassword123"}`
 Response: `{"status": "success", "message": "Password reset successful!"}`
+
+Session management:
+
+```http
+GET /api/auth/sessions
+Authorization: Bearer <accessToken>
+```
+
+The session list never returns raw refresh tokens or token hashes.
+
+```http
+DELETE /api/auth/sessions/:sessionId
+Authorization: Bearer <accessToken>
+```
 
 Email verification request:
 
@@ -433,6 +688,8 @@ Email verification request:
 | GET | `/users/handle/:username` | Public (Optional Auth) | Get public profile by username |
 | GET | `/users/profile` | Private | Get own full profile |
 | PATCH | `/users/profile` | Private | Update own profile |
+| PATCH | `/users/feed-preferences` | Private | Update onboarding and muted topics for the feed algorithm |
+| POST | `/users/:userId/profile-click` | Private | Track profile visit/click affinity |
 | DELETE | `/users/account` | Private | Delete/deactivate own account |
 | GET | `/users` | Private/Admin | Admin user listing |
 | PATCH | `/users/:id/role` | Private/Admin | Update role |
@@ -452,6 +709,7 @@ Important: profile fields must be sent inside `profile`.
     "bio": "Updated bio",
     "avatar": "https://example.com/avatar.jpg",
     "location": "New York, USA",
+    "country": "NG",
     "website": "https://johndoe.com",
     "phoneNumber": "+2348000000000"
   }
@@ -462,10 +720,32 @@ Common mistake:
 - Sending `"displayName"` at root level will not update the profile.
 - Use `"profile.displayName"` via nested `profile` object.
 
+Feed preferences payload:
+
+```http
+PATCH /api/users/feed-preferences
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+```
+
+```json
+{
+  "onboardingTopics": ["tech", "football", "afrobeats"],
+  "mutedTopics": ["politics"]
+}
+```
+
+Behavior:
+- `onboardingTopics` power the cold-start feed before a user has enough engagement history.
+- `mutedTopics` are removed from personalized feed candidates.
+- Topics are normalized to lowercase and deduplicated.
+
 Profile media note:
 - `profile.avatar` is currently a string URL field.
-- There is no dedicated backend endpoint yet for direct avatar/cover file upload.
-- `coverImage` is not currently part of the `User` schema.
+- Use [Media & Universal Assets](#media--universal-assets) to upload/register avatar, cover photo, banner, raw file, or text assets.
+- `profile.avatar` can store the returned asset URL.
+- Cover photo/banner can be stored as a media asset with `usage: "cover_photo"` or `usage: "profile_banner"`.
+- `coverImage` is not currently part of the `User` schema, so keep cover/banner state in the media asset registry until the user schema is extended.
 
 Admin list filters:
 - `page`, `limit`
@@ -509,9 +789,15 @@ Valid statuses: `active`, `suspended`, `banned`
 | GET | `/posts/sphere` | Public (Optional Auth) | Public discovery feed |
 | GET | `/posts/category/:categorySlug` | Public (Optional Auth) | Category feed |
 | GET | `/posts/search` | Public (Optional Auth) | Search posts |
+| GET | `/posts/likes/me` | Private | Current user's liked posts, newest liked first |
 | GET | `/posts/:postId` | Public (Optional Auth) | Get a single post |
 | GET | `/posts/:postId/thread` | Public (Optional Auth) | Thread view (post + replies) |
+| GET | `/posts/:postId/reposts` | Public (Optional Auth) | Users who reposted/quoted a post |
+| GET | `/posts/:postId/quotes` | Public (Optional Auth) | Quote reposts of a post |
+| POST | `/posts/:postId/view` | Public (Optional Auth) | Track a meaningful post view |
 | GET | `/posts/user/:username` | Public (Optional Auth) | User post feed |
+| GET | `/posts/user/:username/media` | Public (Optional Auth) | User media posts |
+| GET | `/posts/user/:username/reposts` | Public (Optional Auth) | User reposts and quote reposts |
 | GET | `/posts/feed/home` | Private | Following-based home feed |
 | GET | `/posts/feed/sphere` | Private | Authenticated discovery feed |
 | POST | `/posts` | Private | Create post |
@@ -530,11 +816,25 @@ Valid statuses: `active`, `suspended`, `banned`
 | GET | `/posts/bookmarks/me` | Private | List own bookmarks |
 | DELETE | `/posts/:postId` | Private | Delete own post |
 
+Official feed endpoints:
+
+| Method | Endpoint | Access | Purpose |
+|--------|----------|--------|---------|
+| GET | `/feed/home` | Private | Home/following feed |
+| POST | `/feed/home/refresh` | Private | Refresh feed cache |
+| GET | `/feed/sphere` | Private | Authenticated Sphere feed |
+| GET | `/feed/sphere/category/:category` | Private | Authenticated category feed |
+| GET | `/feed/ranking/:postId` | Private | Debug ranking info |
+
+Compatibility note:
+- `/posts/feed/home` and `/posts/feed/sphere` still work but return deprecation headers.
+- Prefer `/feed/*` for all new frontend code.
+
 Common query params:
 - `page`, `limit`
 - `category` where applicable
 - `sort` for `/posts/search`: `relevance`, `recent`, `popular`
-- `type` for `/posts/user/:username`: `posts`, `replies`, `all`
+- `type` for `/posts/user/:username`: `posts`, `replies`, `all`, `media`, `reposts`
 
 Create post payload:
 
@@ -599,8 +899,49 @@ Interaction summary:
 - Unlike comment: `DELETE /posts/reply/:replyId/like`
 - Bookmark: `POST /posts/:postId/bookmark`
 - Unbookmark: `DELETE /posts/:postId/bookmark`
+- My liked posts: `GET /posts/likes/me`
 - Repost/quote create: `POST /posts/repost`
 - Explicit unrepost: `DELETE /posts/repost/:postId`
+- Who reposted: `GET /posts/:postId/reposts`
+- Quote posts: `GET /posts/:postId/quotes`
+- User media tab: `GET /posts/user/:username/media` or `/posts/user/:username?type=media`
+- User repost tab: `GET /posts/user/:username/reposts` or `/posts/user/:username?type=reposts`
+- Algorithm signal tracking: `POST /posts/:postId/engagement`
+
+Post view tracking:
+
+```http
+POST /api/posts/:postId/view
+Authorization: Bearer <accessToken optional>
+```
+
+Behavior:
+- Counts at most one view per viewer identity per post per short time window.
+- Logged-in author views are ignored.
+- Guests are grouped by `x-device-id`, `x-client-id`, or IP fallback.
+- Response includes `viewsCount` and `counted`.
+
+Feed algorithm signal tracking:
+
+```http
+POST /api/posts/:postId/engagement
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+```
+
+Example body:
+
+```json
+{
+  "action": "dwell",
+  "dwellSeconds": 12,
+  "source": "sphere_feed"
+}
+```
+
+Supported `action` values are `impression`, `dwell`, `profile_click`, `link_click`, `hide`, and `not_interested`.
+
+This endpoint writes an engagement event, updates viewer-author affinity, updates topic interest learning, and updates post algorithm counters such as impressions, average dwell time, hide rate, and not-interested rate. Wemsty uses this as a lightweight ML-style personalization layer without requiring a separate ML server yet.
 
 #### Frontend Engineer Expectations
 - Never compute like/repost/bookmark counters locally; always trust backend counters in responses/events.
@@ -636,6 +977,7 @@ Pagination applies to follower/following lists.
 
 #### Frontend Engineer Expectations
 - Drive follow button state from `/social/follow/status/:userId` or mutation response status.
+- Prefer `/social/relationship/:userId` for profile pages because it returns `following`, `followedBy`, `pending`, `muted`, `blocked`, and `blockedBy` in one call.
 - Handle private-account follow behavior (`PENDING`) in UI distinctly from accepted follow.
 - Refresh follower/following counts after follow/unfollow/accept/reject actions.
 - Remove blocked/muted users from relevant feeds and visible lists immediately.
@@ -701,6 +1043,7 @@ Redeem invite payload:
 | GET | `/messages/reads` | Private | Conversation read states |
 | POST | `/messages/reads` | Private | Update read state |
 | GET | `/messages/dm/conversations` | Private | DM conversation list |
+| GET | `/messages/dm/conversations/search` | Private | Search DM conversations by participant or recent message text |
 | POST | `/messages/dm/conversations/:userId` | Private | Get/create DM conversation |
 | GET | `/messages/dm/conversations/:conversationId/messages` | Private | DM messages |
 | POST | `/messages/dm/conversations/:conversationId/messages` | Private | Send DM message |
@@ -729,6 +1072,7 @@ Read state update payload:
 
 #### Frontend Engineer Expectations
 - Use server pagination for messages; avoid assuming full history is returned in one call.
+- Use `/messages/dm/conversations/search?q=<term>` for inbox search; do not fetch all conversations and filter locally.
 - Reconcile optimistic messages with server-returned message objects after send endpoints.
 - Keep read-state source of truth on backend (`/messages/reads`) and patch UI from returned read state.
 - Enforce access errors (`403/404`) by routing users out of unauthorized channel/conversation screens.
@@ -811,14 +1155,48 @@ Update preferences payload:
 | POST | `/feed/home/refresh` | Private | Refresh feed cache |
 | GET | `/feed/sphere` | Private | Discovery feed |
 | GET | `/feed/sphere/category/:category` | Private | Category discovery feed |
+| GET | `/feed/analytics?days=7` | Private/Admin, Moderator | Algorithm exposure, source, variant, and topic analytics |
 | GET | `/feed/ranking/:postId` | Private | Ranking debug data |
 
 Feed queries commonly use `page` and `limit`.
+
+Sphere feed supports optional algorithm controls:
+
+```http
+GET /api/feed/sphere?page=1&limit=20&mode=top&variant=balanced
+Authorization: Bearer <accessToken>
+```
+
+Supported variants:
+- `balanced`: default all-round ranking.
+- `fresh`: gives newer posts more room.
+- `social`: gives relationship and affinity signals more weight.
+
+If `variant` is omitted, Wemsty assigns a stable variant per user and algorithm version for lightweight A/B testing.
+
+Algorithm analytics response:
+
+```json
+{
+  "success": true,
+  "message": "Algorithm analytics loaded successfully",
+  "data": {
+    "algorithmVersion": "wemsty-v2",
+    "eventsByAction": [],
+    "exposuresBySource": [],
+    "exposuresByVariant": [],
+    "topTopics": []
+  }
+}
+```
+
+The feed system now records ranked feed exposures, updates those exposures from engagement events, learns short-session topic memory in Redis, and includes collaborative/vector-ready candidate sources. The vector source is disabled unless `ENABLE_VECTOR_RECOMMENDATIONS=true`.
 
 #### Frontend Engineer Expectations
 - Treat returned `items`, `feed`, and `posts` aliases as equivalent feed arrays.
 - For pull-to-refresh/manual refresh UX, call `POST /feed/home/refresh` then refetch first page.
 - Respect `mode` and cache flags from UI controls when calling sphere/discovery endpoints.
+- Send real user events to `POST /posts/:postId/engagement` for `impression`, `view`, `dwell`, `hide`, `not_interested`, and other supported actions so ranking memory has clean training data.
 - Gracefully handle feed throttling (`429`) with retry delay from `retryAfter`.
 
 ---
@@ -909,6 +1287,307 @@ Query parameters:
 
 ---
 
+### Media & Universal Assets
+
+Use these endpoints for avatars, cover photos, banners, post files, message files, random raw files, and simple text assets. The main storage endpoint is intentionally universal:
+
+```text
+POST https://api.wemsty.com/api/media/assets
+```
+
+| Method | Endpoint | Access | Purpose |
+|--------|----------|--------|---------|
+| POST | `/media/signature` | Private | Generate signed Cloudinary upload parameters for `image`, `video`, or `raw` uploads |
+| POST | `/media/assets` | Private | Register uploaded media or store text in one endpoint |
+| POST | `/media/register` | Private | Backward-compatible alias for `/media/assets` |
+| GET | `/media/assets` | Private | List authenticated user's assets |
+| PATCH | `/media/assets/:publicId` | Private | Update usage, attachment, metadata, tags, or text |
+| DELETE | `/media/:publicId` | Private | Delete media from Cloudinary or mark text asset deleted |
+
+Allowed `resourceType` values:
+
+```text
+image
+video
+raw
+text
+```
+
+Rules:
+- `image`, `video`, and `raw` assets should be uploaded to Cloudinary first, then registered with `/media/assets`.
+- `text` assets do not need Cloudinary; they are stored directly by `/media/assets`.
+- `usage` and `attachedToType` must be lowercase slugs like `cover_photo`, `profile_banner`, `avatar`, `post_attachment`, `profile_note`, or `random_file`.
+- Do not store secrets, passwords, OTPs, tokens, or private keys in text assets.
+
+#### Generate Upload Signature
+
+```http
+POST /api/media/signature
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+```
+
+Payload:
+
+```json
+{
+  "usage": "cover_photo",
+  "resourceType": "image"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "message": "Upload signature generated",
+  "data": {
+    "cloudName": "your_cloud_name",
+    "apiKey": "your_cloudinary_api_key",
+    "timestamp": 1778966225,
+    "folder": "wemsty/cover_photo",
+    "usage": "cover_photo",
+    "resourceType": "image",
+    "signature": "cloudinary_signature"
+  }
+}
+```
+
+Frontend upload flow:
+1. Call `/media/signature`.
+2. Upload the file directly to Cloudinary using the returned fields.
+3. Take Cloudinary's `public_id` and `secure_url`.
+4. Register it with `/media/assets`.
+
+#### Register Media
+
+```http
+POST /api/media/assets
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+```
+
+Cover photo example:
+
+```json
+{
+  "publicId": "wemsty/cover_photo/abc123",
+  "url": "https://res.cloudinary.com/wemsty/image/upload/v1/wemsty/cover_photo/abc123.jpg",
+  "resourceType": "image",
+  "usage": "cover_photo",
+  "attachedToType": "profile_cover",
+  "attachedToId": "USER_ID",
+  "metadata": {
+    "crop": "wide",
+    "source": "profile-settings"
+  },
+  "tags": ["cover", "profile"]
+}
+```
+
+Raw/random file example:
+
+```json
+{
+  "publicId": "wemsty/random/file123",
+  "url": "https://res.cloudinary.com/wemsty/raw/upload/v1/wemsty/random/file123.pdf",
+  "resourceType": "raw",
+  "usage": "random_file",
+  "metadata": {
+    "label": "User uploaded PDF"
+  }
+}
+```
+
+#### Store Text With The Same Endpoint
+
+The backend auto-generates `publicId` for text assets when omitted.
+
+```http
+POST /api/media/assets
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+```
+
+Payload:
+
+```json
+{
+  "resourceType": "text",
+  "usage": "profile_note",
+  "text": "Anything the app needs to store as text.",
+  "metadata": {
+    "screen": "profile-settings",
+    "localDraftId": "draft-001"
+  },
+  "tags": ["profile", "note"]
+}
+```
+
+Nested text also works:
+
+```json
+{
+  "usage": "profile_note",
+  "content": {
+    "text": "Nested text also works."
+  }
+}
+```
+
+Success response:
+
+```json
+{
+  "success": true,
+  "message": "Media asset registered",
+  "data": {
+    "asset": {
+      "_id": "asset_id",
+      "publicId": "wemsty/text/USER_ID/1778966225000-uuid",
+      "resourceType": "text",
+      "usage": "profile_note",
+      "text": "Anything the app needs to store as text.",
+      "status": "uploaded",
+      "metadata": {
+        "screen": "profile-settings"
+      },
+      "tags": ["profile", "note"]
+    }
+  }
+}
+```
+
+#### List Assets
+
+```http
+GET /api/media/assets?usage=cover_photo&page=1&limit=20
+Authorization: Bearer <accessToken>
+```
+
+Query params:
+- `usage`: optional asset usage filter
+- `status`: optional status filter, for example `uploaded`, `attached`, `deleted`, `cleanup_failed`
+- `page`: default `1`
+- `limit`: default `20`, max `100`
+
+#### Update Asset
+
+```http
+PATCH /api/media/assets/:publicId
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+```
+
+Payload:
+
+```json
+{
+  "usage": "profile_banner",
+  "attachedToType": "profile_banner",
+  "attachedToId": "USER_ID",
+  "metadata": {
+    "crop": "center"
+  },
+  "tags": ["banner"]
+}
+```
+
+Text update:
+
+```json
+{
+  "text": "Updated text value"
+}
+```
+
+#### Delete Asset
+
+```http
+DELETE /api/media/:publicId
+Authorization: Bearer <accessToken>
+```
+
+Behavior:
+- File assets are deleted from Cloudinary using their `resourceType`.
+- Text assets are marked deleted without calling Cloudinary.
+- Only the asset owner can delete their own asset.
+
+#### Frontend Engineer Expectations
+
+- Use `/media/assets` as the single universal storage endpoint.
+- Use `usage` to explain what the asset is for.
+- Store only Cloudinary `secure_url` as `url`.
+- Keep `publicId`; it is needed for updates/deletes.
+- Use the returned asset object to update local UI state.
+- Use real post/message APIs for social content; text assets are for flexible app metadata, notes, labels, drafts, and simple stored text.
+
+---
+
+### Queue Dashboard
+
+Bull Board is mounted at:
+
+```text
+https://api.wemsty.com/api/queues
+```
+
+Access: `Private operations token`
+
+This dashboard is not authenticated with normal user JWT. It requires the deployment env var:
+
+```env
+QUEUE_DASHBOARD_TOKEN=<strong-random-token>
+```
+
+Then request with either:
+
+```http
+x-queue-dashboard-token: <QUEUE_DASHBOARD_TOKEN>
+```
+
+or:
+
+```http
+Authorization: Bearer <QUEUE_DASHBOARD_TOKEN>
+```
+
+If the token is missing from environment, the API returns:
+
+```json
+{
+  "success": false,
+  "message": "Queue dashboard is not configured",
+  "code": "SERVICE_UNAVAILABLE",
+  "errors": []
+}
+```
+
+If the request token is wrong/missing, the API returns:
+
+```json
+{
+  "success": false,
+  "message": "Queue dashboard access denied",
+  "code": "FORBIDDEN",
+  "errors": []
+}
+```
+
+Queues shown:
+- email
+- notifications
+- search indexing
+- feed
+- payment
+- moderation
+- media
+- maintenance
+- dead letter
+
+---
+
 ### Payments
 
 | Method | Endpoint | Access | Purpose |
@@ -942,6 +1621,7 @@ Initialize payment payload:
 
 | Method | Endpoint | Access | Purpose |
 |--------|----------|--------|---------|
+| GET | `/moderation/report-reasons` | Public | List report reasons for UI |
 | POST | `/moderation/reports` | Private | Create report |
 | GET | `/moderation/reports` | Private/Admin, Moderator | List reports |
 | POST | `/moderation/reports/:reportId/actions` | Private/Admin, Moderator | Apply moderation action |
@@ -1018,13 +1698,15 @@ This section is the strict frontend contract for every mounted API route.
 | `POST /auth/reset-password` | JSON: `token`, `newPassword`. | Route to login and clear stale auth state. |
 | `POST /auth/password-reset/request` | JSON: `email`. | Start OTP stepper UI and countdown timer. |
 | `POST /auth/password-reset/verify-otp` | JSON: `email`, `otp`. | Store returned reset token (if present) in memory only and move to reset step. |
-| `POST /auth/password-reset/reset` | JSON: `token`, `newPassword`. | Force new login flow after success. |
+| `POST /auth/password-reset/reset` | JSON option A: `resetToken`, `newPassword`; option B: `email`, `otp`, `newPassword`. | Force new login flow after success. |
 | `POST /auth/password-reset/feedback` | JSON feedback payload from UI form. | Fire-and-forget UX; do not block auth flow on this endpoint. |
 | `POST /auth/password-reset/resend-otp` | JSON: `email`. | Restart OTP timer and keep user in same step. |
 | `POST /auth/verify-email` | JSON: `token` from verification link. | Mark user as verified in state and remove verification banner. |
 | `GET /auth/me` | Bearer token. | Use as source of truth for session restoration on app boot. |
 | `POST /auth/logout` | Bearer token. | Clear local tokens/user cache and disconnect realtime socket. |
 | `POST /auth/logout-all` | Bearer token. | Clear local tokens and prompt re-login on all client tabs/devices. |
+| `GET /auth/sessions` | Bearer token. | Render active sessions without expecting token or token hash fields. |
+| `DELETE /auth/sessions/:sessionId` | Bearer token + session id. | Remove revoked session from session management UI. |
 | `POST /auth/change-password` | Bearer token + JSON: `currentPassword`, `newPassword`. | Show success and optionally require token refresh/re-auth for sensitive screens. |
 | `POST /auth/resend-verification` | Bearer token. | Show cooldown UI and "email sent" status. |
 
@@ -1035,6 +1717,8 @@ This section is the strict frontend contract for every mounted API route.
 | `GET /users/handle/:username` | Optional bearer token. | Render public profile header and counters from server response. |
 | `GET /users/profile` | Bearer token. | Hydrate editable profile form from full user object. |
 | `PATCH /users/profile` | Bearer token + JSON; profile fields must be nested under `profile`. | Replace local user state with returned user object. |
+| `PATCH /users/feed-preferences` | Bearer token + JSON `onboardingTopics` and/or `mutedTopics`. | Save topic onboarding choices and topic mutes used by the personalized feed. |
+| `POST /users/:userId/profile-click` | Bearer token + optional `source`. | Send when a post/profile surface causes the viewer to open a creator profile. |
 | `DELETE /users/account` | Bearer token + `confirmDelete: "DELETE"` and `password` (for password users). | Hard logout client and route to account-deleted screen. |
 | `GET /users` | Bearer token (admin/moderator) + optional `page`, `limit`, `search`, `status`, `role`. | Drive admin user table with pagination/filter chips. |
 | `PATCH /users/:id/role` | Bearer token (admin) + JSON: `role`. | Update row immediately in admin table from response. |
@@ -1049,9 +1733,15 @@ This section is the strict frontend contract for every mounted API route.
 | `GET /posts/sphere` | Optional bearer token + optional `page`, `limit`, `mode`. | Render discovery feed; mode should match active tab (`top`/`latest`). |
 | `GET /posts/category/:categorySlug` | Optional bearer token + optional `page`, `limit`, `mode`. | Render category feed and category metadata from server. |
 | `GET /posts/search` | Optional bearer token + required `q`; optional `page`, `limit`, `category`. | Debounce query in UI and show empty/error states for missing/invalid search. |
+| `GET /posts/likes/me` | Bearer token + optional `page`, `limit`. | Render profile Likes tab from returned posts; do not locally filter all posts. |
 | `GET /posts/:postId` | Optional bearer token. | Use as canonical post detail payload (includes viewer booleans when authed). |
 | `GET /posts/:postId/thread` | Optional bearer token. | Build thread view from `post` + `replies`; do not compute counts client-side. |
+| `GET /posts/:postId/reposts` | Optional bearer token + optional `page`, `limit`. | Render repost user list/count modal from returned `reposts`. |
+| `GET /posts/:postId/quotes` | Optional bearer token + optional `page`, `limit`. | Render quote repost timeline from returned quote posts. |
+| `POST /posts/:postId/view` | Optional bearer token; guests may send `x-device-id`. | Use for impression/view tracking; read `viewsCount` and `counted`. |
 | `GET /posts/user/:username` | Optional bearer token + optional `page`, `limit`, `includeReplies`, `includeReposts`. | Default profile "Thoughts" tab should keep `includeReposts=false` unless a repost tab exists. |
+| `GET /posts/user/:username/media` | Optional bearer token + optional `page`, `limit`. | Render profile Media tab with server-side pagination. |
+| `GET /posts/user/:username/reposts` | Optional bearer token + optional `page`, `limit`. | Render profile Reposts tab with server-side pagination. |
 | `GET /posts/feed/home` | Bearer token + optional `page`, `limit`. | Render following feed and persist pagination cursor/state. |
 | `GET /posts/feed/sphere` | Bearer token + optional `page`, `limit`, `mode`. | Render authenticated discovery feed and reuse same card contracts as public feed. |
 | `POST /posts` | Bearer token + JSON with `text` or `media`; optional `category`, `visibility`, `sphereEligible`. | Insert returned post from server response; never fabricate ids/counters locally. |
@@ -1084,6 +1774,7 @@ This section is the strict frontend contract for every mounted API route.
 | `GET /social/following/:userId` | Bearer token + optional `page`, `limit`. | Render following tab with pagination and total count. |
 | `GET /social/mutual/:userId` | Bearer token. | Show mutual connections list/chips in profile context. |
 | `GET /social/suggestions` | Bearer token + optional `limit`. | Render suggestion cards and consume lazily. |
+| `GET /social/relationship/:userId` | Bearer token. | Hydrate profile action buttons from `following`, `followedBy`, `pending`, `muted`, `blocked`, `blockedBy`. |
 | `POST /social/block/:userId` | Bearer token. | Immediately hide blocked user's content and invalidate active chat/thread views. |
 | `DELETE /social/block/:userId` | Bearer token. | Allow profile/content to appear again after unblock. |
 | `GET /social/blocked` | Bearer token + optional `page`, `limit`. | Render blocked users management list. |
@@ -1122,6 +1813,7 @@ This section is the strict frontend contract for every mounted API route.
 | `GET /messages/reads` | Bearer token. | Hydrate unread badges/read receipts state. |
 | `POST /messages/reads` | Bearer token + JSON: `scopeType`, `scopeId`, optional `lastReadMessageId`. | Update read indicators and unread counters. |
 | `GET /messages/dm/conversations` | Bearer token. | Render DM inbox list sorted by server order. |
+| `GET /messages/dm/conversations/search` | Bearer token + required `q`, optional `page`, `limit`. | Render paginated DM search results from server. |
 | `POST /messages/dm/conversations/:userId` | Bearer token. | Open or create DM thread and route to conversation UI. |
 | `GET /messages/dm/conversations/:conversationId/messages` | Bearer token + optional `page`, `limit`. | Render DM messages with pagination; use server as source of truth. |
 | `POST /messages/dm/conversations/:conversationId/messages` | Bearer token + JSON: `bodyText`. | Append returned DM message and sync optimistic state. |
@@ -1157,6 +1849,26 @@ This section is the strict frontend contract for every mounted API route.
 | `GET /feed/sphere` | Bearer token + optional `page`, `limit`, `mode`, `useCache`. | Render discovery feed and mode switcher (`top`/`latest`) using server results. |
 | `GET /feed/sphere/category/:category` | Bearer token + optional `page`, `limit`, `mode`. | Render category-filtered discovery feed. |
 | `GET /feed/ranking/:postId` | Bearer token. | Use only for internal debug tooling, not regular end-user surfaces. |
+| `POST /posts/:postId/engagement` | Bearer token + JSON `action`; include `dwellSeconds` for dwell events. | Send viewport and negative feedback signals so Wemsty can learn interests and suppress unwanted content. |
+| `POST /posts/:postId/link-click` | Bearer token + optional JSON `url`. | Send before opening external links so link-click interest can be learned. |
+
+`GET /feed/sphere` uses the Phase 1 Wemsty For You pipeline:
+- followed-author candidates
+- topic-interest candidates
+- trending/velocity candidates
+- small-creator discovery candidates
+- exploration candidates
+- social-proof candidates from posts engaged by people the viewer follows
+- onboarding-topic fallback for new users
+- muted-topic filtering
+- score ranking and diversity caps
+
+Phase 2 additions:
+- creator reputation is included in author health
+- `variant=balanced|fresh|social` can be passed to test feed weight variants
+- feed cache keys include algorithm version and variant
+- `GET /feed/ranking/:postId?variant=social` returns a detailed score breakdown
+- `npm run algorithm:train` exports lightweight training recommendations from `EngagementLog`
 
 ### Trending Contract
 
@@ -1178,6 +1890,17 @@ This section is the strict frontend contract for every mounted API route.
 |---|---|---|
 | `GET /search` | Required `q`; optional `type` (`all`, `users`, `posts`, `circles`, `categories`), optional `limit`. | Use returned grouped arrays (`users`, `posts`, `circles`, `categories`) and avoid client-side regrouping logic. |
 
+### Media & Universal Assets Contract
+
+| Endpoint | Frontend must send | Frontend must do after response |
+|---|---|---|
+| `POST /media/signature` | Bearer token + JSON: `usage`, `resourceType` (`image`, `video`, or `raw`). | Upload file directly to Cloudinary with returned signing data. |
+| `POST /media/assets` | Bearer token + either media registration fields or text fields. | Store returned `asset`, especially `publicId`, `url`, `usage`, `resourceType`, and `text` when present. |
+| `POST /media/register` | Same as `/media/assets`. | Prefer `/media/assets` for new frontend code. |
+| `GET /media/assets` | Bearer token + optional `usage`, `status`, `page`, `limit`. | Render user-owned assets and paginate using response metadata. |
+| `PATCH /media/assets/:publicId` | Bearer token + fields to update, such as `usage`, `attachedToType`, `attachedToId`, `metadata`, `tags`, or `text`. | Replace local asset with returned asset. |
+| `DELETE /media/:publicId` | Bearer token. | Remove asset from local UI or mark it deleted. |
+
 ### Payments Contract
 
 | Endpoint | Frontend must send | Frontend must do after response |
@@ -1191,6 +1914,7 @@ This section is the strict frontend contract for every mounted API route.
 
 | Endpoint | Frontend must send | Frontend must do after response |
 |---|---|---|
+| `GET /moderation/report-reasons` | No auth. | Populate report reason picker; do not hardcode reasons client-side. |
 | `POST /moderation/reports` | Bearer token + JSON: `targetType`, `targetId`, `reasonCode`; optional `detailsText`. | Show report submitted confirmation and disable duplicate report action for same target. |
 | `GET /moderation/reports` | Bearer token (admin/moderator) + optional `status`, `page`, `limit`. | Render moderation queue with pagination and status filters. |
 | `POST /moderation/reports/:reportId/actions` | Bearer token (admin/moderator) + JSON: `actionType`, optional `reasonText`. | Update moderation queue row status and surface applied action details. |
@@ -1216,7 +1940,7 @@ import { io } from 'socket.io-client';
 let socket;
 
 export function connectRealtime(accessToken, handlers = {}) {
-  socket = io('https://wemsty-backend.onrender.com/realtime', {
+  socket = io('https://api.wemsty.com/realtime', {
     transports: ['websocket'],
     auth: { token: accessToken }
   });
@@ -1269,7 +1993,7 @@ Basic connection example:
 ```javascript
 import io from 'socket.io-client';
 
-const socket = io('http://localhost:3001/realtime', {
+const socket = io('https://api.wemsty.com/realtime', {
   auth: {
     token: 'your_jwt_access_token'
   }
@@ -1376,6 +2100,29 @@ These are representative structures and may include additional fields.
 }
 ```
 
+### Media Asset
+
+```javascript
+{
+  _id: "ObjectId",
+  publicId: "wemsty/cover_photo/abc123",
+  url: "https://res.cloudinary.com/...", // omitted for text assets
+  resourceType: "image", // image, video, raw, text
+  usage: "cover_photo",
+  owner: "user_id",
+  attachedToType: "profile_cover",
+  attachedToId: "user_id",
+  status: "attached", // uploaded, attached, deleted, cleanup_failed
+  text: null, // string for text assets
+  metadata: {
+    crop: "wide"
+  },
+  tags: ["cover", "profile"],
+  createdAt: "2024-01-01T00:00:00.000Z",
+  updatedAt: "2024-01-01T00:00:00.000Z"
+}
+```
+
 ### Notification
 
 ```javascript
@@ -1415,14 +2162,24 @@ These are representative structures and may include additional fields.
 ### File Uploads
 Current state:
 - Profile avatar is stored as a URL string (`profile.avatar`).
-- Dedicated profile image upload endpoints are not wired yet in this codebase.
-- For now, upload media using your own storage flow and save the returned URL.
+- Universal media/text storage is available through `/api/media/assets`.
+- Signed Cloudinary upload parameters are available through `/api/media/signature`.
+- Use `usage` values like `avatar`, `cover_photo`, `profile_banner`, `post_attachment`, `message_attachment`, `random_file`, or `profile_note`.
+- Text assets can be stored directly with `resourceType: "text"` and `text`.
 
 ### Sorting
 Some list endpoints support sorting. Use endpoint-specific `sort` values where provided.
 
 ### CORS
-In development, CORS allows all origins. Restrict allowed origins in production configuration.
+Production CORS is restricted by `ALLOWED_ORIGINS`.
+
+Recommended production value:
+
+```env
+ALLOWED_ORIGINS=https://wemsty.com,https://www.wemsty.com,https://api.wemsty.com
+```
+
+Development automatically allows common localhost origins.
 
 ### Kafka (Event Streaming)
 Kafka is used for asynchronous background events (post activity, search indexing, notifications).
@@ -1449,16 +2206,31 @@ Runtime behavior:
 
 ---
 
-**Last updated:** 2026-05-10
+**Last updated:** 2026-05-17
 
 ## Environment Variables & Infrastructure
 
-### Email Infrastructure (Plunk + Nodemailer)
-The backend has transitioned to **Plunk**. For reliability, it uses **Nodemailer** for SMTP relay.
+### Email Infrastructure (Brevo SMTP + Nodemailer)
+The backend currently sends transactional email through **Brevo SMTP** using Nodemailer.
 
 **Required Env Vars:**
-- PLUNK_API_KEY: Your Plunk Secret Key (sk_...).
-- SMTP_FROM: The verified sender address (e.g., noreply@mail.wemsty.com).
+- `SMTP_HOST=smtp-relay.brevo.com`
+- `SMTP_PORT=587`
+- `SMTP_SECURE=false`
+- `SMTP_USER=<your Brevo SMTP login>`
+- `SMTP_PASS=<your Brevo SMTP key>`
+- `SMTP_FROM=noreply@mail.wemsty.com`
+
+DNS requirements:
+- SPF configured for Brevo
+- DKIM configured for Brevo
+- DMARC configured for your domain
+
+Smoke test:
+
+```bash
+npm run email:smoke -- your@email.com
+```
 
 ### Mobile Update Security Bridge
 Required for private GitHub repositories.

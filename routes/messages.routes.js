@@ -10,6 +10,7 @@ router.post('/channels/:circleId/:channelId', messagingController.sendChannelMes
 router.get('/reads', messagingController.getReadStates);
 router.post('/reads', messagingController.updateReadState);
 router.get('/dm/conversations', messagingController.listDMConversations);
+router.get('/dm/conversations/search', messagingController.searchDMConversations);
 router.post('/dm/conversations/:userId', messagingController.getOrCreateConversation);
 router.get('/dm/conversations/:conversationId/messages', messagingController.getDMMessages);
 router.post('/dm/conversations/:conversationId/messages', messagingController.sendDMMessage);

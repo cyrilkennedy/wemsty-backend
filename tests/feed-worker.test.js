@@ -60,8 +60,8 @@ async function runFeedWorkerTests() {
 
     assert.equal(refresh.processed, 1);
     assert.equal(refresh.updated, 1);
-    assert.equal(activePost.engagement.score, 17);
-    assert.equal(activePost.engagement.velocity, 6.5);
+    assert.equal(activePost.engagement.score, 57);
+    assert.equal(activePost.engagement.velocity, 28.5);
     assert.equal(activePost.sphereScore, 42);
     assert.equal(activePost.saved, true);
     assert.equal(refreshQuery.status, 'active');

@@ -4,6 +4,7 @@ const CircleMessage = require('../models/CircleMessage.model');
 const DMConversation = require('../models/DMConversation.model');
 const DMMessage = require('../models/DMMessage.model');
 const MessageRead = require('../models/MessageRead.model');
+const User = require('../models/User.model');
 const AppError = require('../utils/AppError');
 const { catchAsync } = require('../utils/catchAsync');
 const {
@@ -101,6 +102,72 @@ exports.listDMConversations = catchAsync(async (req, res) => {
   res.status(200).json({
     success: true,
     data: { conversations }
+  });
+});
+
+exports.searchDMConversations = catchAsync(async (req, res, next) => {
+  const { q, page = 1, limit = 20 } = req.query;
+  const searchTerm = typeof q === 'string' ? q.trim() : '';
+
+  if (!searchTerm) {
+    return next(new AppError('Search query is required', 400));
+  }
+
+  const safePage = Math.max(1, parseInt(page, 10) || 1);
+  const safeLimit = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
+  const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(escaped, 'i');
+
+  const matchedUsers = await User.find({
+    _id: { $ne: req.user._id },
+    accountStatus: 'active',
+    $or: [
+      { username: regex },
+      { 'profile.displayName': regex },
+      { 'profile.firstName': regex },
+      { 'profile.lastName': regex }
+    ]
+  }).select('_id');
+
+  const baseConversations = await DMConversation.find({
+    members: req.user._id
+  }).select('_id members');
+
+  const conversationIds = baseConversations.map((conversation) => conversation._id);
+  const matchedMessages = await DMMessage.find({
+    conversation: { $in: conversationIds },
+    moderationState: { $ne: 'removed' },
+    bodyText: regex
+  }).select('conversation');
+
+  const matchedUserIds = new Set(matchedUsers.map((user) => user._id.toString()));
+  const matchedConversationIds = new Set(matchedMessages.map((message) => message.conversation.toString()));
+
+  for (const conversation of baseConversations) {
+    if (conversation.members.some((member) => matchedUserIds.has(member.toString()))) {
+      matchedConversationIds.add(conversation._id.toString());
+    }
+  }
+
+  const ids = [...matchedConversationIds];
+  const total = ids.length;
+  const pageIds = ids.slice((safePage - 1) * safeLimit, safePage * safeLimit);
+
+  const conversations = await DMConversation.find({ _id: { $in: pageIds } })
+    .populate('members', 'username profile.displayName profile.avatar')
+    .sort({ lastMessageAt: -1, updatedAt: -1 });
+
+  res.status(200).json({
+    success: true,
+    data: { conversations },
+    meta: {
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        pages: Math.ceil(total / safeLimit)
+      }
+    }
   });
 });
 
