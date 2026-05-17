@@ -26,11 +26,10 @@ BlockSchema.index({ blocker: 1, blocked: 1 }, { unique: true });
 BlockSchema.index({ blocked: 1, blocker: 1 }); // Reverse lookup
 
 // Prevent self-blocking
-BlockSchema.pre('save', function(next) {
+BlockSchema.pre('save', function() {
   if (this.blocker.equals(this.blocked)) {
-    return next(new Error('Users cannot block themselves'));
+    throw new Error('Users cannot block themselves');
   }
-  next();
 });
 
 // Static method to check if blocked

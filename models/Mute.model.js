@@ -26,11 +26,10 @@ const MuteSchema = new mongoose.Schema({
 MuteSchema.index({ muter: 1, muted: 1 }, { unique: true });
 
 // Prevent self-muting
-MuteSchema.pre('save', function(next) {
+MuteSchema.pre('save', function() {
   if (this.muter.equals(this.muted)) {
-    return next(new Error('Users cannot mute themselves'));
+    throw new Error('Users cannot mute themselves');
   }
-  next();
 });
 
 // Static method to check if muted

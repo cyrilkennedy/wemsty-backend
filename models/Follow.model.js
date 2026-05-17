@@ -62,16 +62,15 @@ FollowSchema.index({ status: 1, createdAt: -1 });
 // VALIDATION
 // ════════════════════════════════════════════════
 
-FollowSchema.pre('save', function(next) {
+FollowSchema.pre('save', function() {
   // Prevent self-follows
   if (this.follower.equals(this.following)) {
-    return next(new Error('Users cannot follow themselves'));
+    throw new Error('Users cannot follow themselves');
   }
-  next();
 });
 
 // Update timestamps based on status
-FollowSchema.pre('save', function(next) {
+FollowSchema.pre('save', function() {
   if (this.isModified('status')) {
     if (this.status === 'ACCEPTED') {
       this.acceptedAt = Date.now();
@@ -79,7 +78,6 @@ FollowSchema.pre('save', function(next) {
       this.rejectedAt = Date.now();
     }
   }
-  next();
 });
 
 // ════════════════════════════════════════════════
