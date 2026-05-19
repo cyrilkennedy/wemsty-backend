@@ -83,6 +83,7 @@ async function runAlgorithmTests() {
   assert.equal(sourceLimits.trending, 10);
   assert.equal(sourceLimits.smallCreator, 10);
   assert.equal(sourceLimits.exploration, 5);
+  assert.equal(sourceLimits.self, 5);
   assert.equal(sourceLimits.vector, 6);
 
   const merged = feedService.mergeCandidates(

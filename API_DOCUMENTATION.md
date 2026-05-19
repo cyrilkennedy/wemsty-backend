@@ -1679,6 +1679,257 @@ This section is the strict frontend contract for every mounted API route.
 6. On `429`, wait `retryAfter` seconds before retrying.
 7. For optional-auth endpoints, include token when available so viewer state (`liked`, `bookmarked`, `reposted`) is returned.
 
+### Full Request/Response Matrix
+
+This is the quick frontend integration matrix. `Frontend sends` means headers, params, query, or JSON body the app must provide. `Backend returns` means the shape or data the UI should consume. All private endpoints require:
+
+```http
+Authorization: Bearer <accessToken>
+```
+
+| Area | Endpoint | Frontend sends | Backend returns |
+|---|---|---|---|
+| Health | `GET /health` | No auth. Optional `Accept: application/json` or browser HTML accept header. | Public health status JSON, or animated HTML health page for browser requests. |
+| Health | `GET /health/deep` | `x-healthcheck-token` when `HEALTHCHECK_TOKEN` is configured. | Deep service status for MongoDB/Redis/queues without exposing secrets. |
+| Auth | `POST /auth/signup` | JSON `email`, `username`, `password`. | User object, `accessToken`, `refreshToken`, cookies when enabled. |
+| Auth | `POST /auth/login` | JSON `email`, `password`. | User object, `accessToken`, `refreshToken`, session metadata. |
+| Auth | `POST /auth/google` | JSON `idToken`. | Same auth payload as login. |
+| Auth | `POST /auth/refresh` | Refresh token in body or cookie. | New access token and rotated refresh token/session data. |
+| Auth | `GET /auth/me` | Bearer token. | Current authenticated user. |
+| Auth | `POST /auth/logout` | Bearer token. | Success message; current refresh session revoked. |
+| Auth | `POST /auth/logout-all` | Bearer token. | Success message; all refresh sessions invalidated. |
+| Auth | `GET /auth/sessions` | Bearer token. | Active session metadata only; never raw refresh token/hash. |
+| Auth | `DELETE /auth/sessions/:sessionId` | Bearer token and `sessionId` path param. | Success message and revoked session state. |
+| Auth | `POST /auth/change-password` | JSON `currentPassword`, `newPassword`. | Success message; may require clients to refresh/relogin. |
+| Auth | `POST /auth/password-reset/request` | JSON `email`. | Generic success message and OTP email send attempt. |
+| Auth | `POST /auth/password-reset/verify-otp` | JSON `email`, `otp`. | Reset token and expiry if OTP is valid. |
+| Auth | `POST /auth/password-reset/reset` | Option A: `resetToken`, `newPassword`. Option B: `email`, `otp`, `newPassword`. | Success message; password changed. |
+| Auth | `POST /auth/password-reset/resend-otp` | JSON `email`. | Generic success message and resend cooldown behavior. |
+| Auth | `POST /auth/password-reset/feedback` | Feedback JSON from reset UI. | Success message; non-blocking feedback saved. |
+| Auth | `POST /auth/verify-email` | JSON `token`. | Email verification success and updated user state. |
+| Auth | `POST /auth/resend-verification` | Bearer token. | Success message and verification email send attempt. |
+| Users | `GET /users/handle/:username` | Username path param, optional auth. | Public profile, counters, viewer-aware fields when authed. |
+| Users | `GET /users/profile` | Bearer token. | Full editable current-user profile. |
+| Users | `PATCH /users/profile` | JSON with root fields and nested `profile` object. | Updated user/profile object. |
+| Users | `PATCH /users/feed-preferences` | JSON `onboardingTopics`, `mutedTopics`. | Saved algorithm preferences. |
+| Users | `POST /users/:userId/profile-click` | `userId` path param, optional `source`. | Tracked profile click signal. |
+| Users | `DELETE /users/account` | JSON confirmation/password where required. | Account deletion/deactivation success. |
+| Users/Admin | `GET /users` | Admin/mod token, optional `page`, `limit`, `search`, `status`, `role`. | Paginated users list. |
+| Users/Admin | `PATCH /users/:id/role` | Admin token, JSON `role`. | Updated user role. |
+| Users/Admin | `PATCH /users/:id/status` | Admin/mod token, JSON `status`, optional reason. | Updated user status. |
+| Posts | `GET /posts/trending` | Optional auth, optional `page`, `limit`, `timeframe`, `category`. | Paginated trending post cards with viewer flags when authed. |
+| Posts | `GET /posts/categories` | No auth. | Category list. |
+| Posts | `GET /posts/sphere` | Optional auth, optional `page`, `limit`, `mode`. | Compatibility Sphere feed; prefer `/feed/sphere`. |
+| Posts | `GET /posts/category/:categorySlug` | Category path param, optional auth/query. | Category metadata and paginated posts. |
+| Posts | `GET /posts/search` | Query `q`, optional `page`, `limit`, `category`. | Paginated searched posts. |
+| Posts | `GET /posts/likes/me` | Bearer token, optional `page`, `limit`. | Posts liked by current user, newest liked first. |
+| Posts | `GET /posts/bookmarks/me` | Bearer token, optional `page`, `limit`, `collection`. | Current user's saved/bookmarked posts. |
+| Posts | `GET /posts/user/:username` | Username path param, optional auth/query. | Profile post timeline. |
+| Posts | `GET /posts/user/:username/media` | Username path param, optional `page`, `limit`. | Profile media-only posts. |
+| Posts | `GET /posts/user/:username/reposts` | Username path param, optional `page`, `limit`. | Profile repost and quote timeline. |
+| Posts | `GET /posts/:postId` | Post id, optional auth. | Single post with viewer state when authed. |
+| Posts | `GET /posts/:postId/thread` | Post id, optional auth. | Parent post plus replies/thread data. |
+| Posts | `GET /posts/:postId/reposts` | Post id, optional `page`, `limit`. | Users/repost records for repost-count modal. |
+| Posts | `GET /posts/:postId/quotes` | Post id, optional `page`, `limit`. | Quote repost posts. |
+| Posts | `POST /posts/:postId/view` | Post id, optional auth and device/session header for guests. | `{ postId, viewsCount, counted }`. |
+| Posts | `POST /posts` | JSON `text` and/or `media`, optional `category`, `visibility`, `sphereEligible`. | Created post object and counters. |
+| Posts | `POST /posts/repost` | JSON `postId`, optional quote `text`. | Repost/quote state and counters. |
+| Posts | `DELETE /posts/repost/:postId` | Original post id. | Repost removed state and updated counter. |
+| Posts | `POST /posts/reply` | JSON `postId`, `text`. | Created reply/comment. |
+| Posts | `PATCH /posts/reply/:replyId` | Reply id and JSON `text`. | Updated reply/comment. |
+| Posts | `DELETE /posts/reply/:replyId` | Reply id. | Delete success and updated parent state where available. |
+| Posts | `POST /posts/reply/:replyId/like` | Reply id. | Idempotent reply liked state and count. |
+| Posts | `DELETE /posts/reply/:replyId/like` | Reply id. | Idempotent reply unliked state and count. |
+| Posts | `POST /posts/:postId/like` | Post id. | Idempotent `{ liked: true, likesCount }`. |
+| Posts | `DELETE /posts/:postId/like` | Post id. | Idempotent `{ liked: false, likesCount }`. |
+| Posts | `GET /posts/:postId/likes` | Post id, optional `page`, `limit`. | Paginated users who liked the post. |
+| Posts | `POST /posts/:postId/bookmark` | Post id, optional collection metadata. | Idempotent `{ bookmarked: true }` and saved-post metadata. |
+| Posts | `DELETE /posts/:postId/bookmark` | Post id. | Idempotent `{ bookmarked: false }`. |
+| Posts | `POST /posts/:postId/engagement` | JSON `action`; for dwell include `dwellSeconds`. | Algorithm signal recorded and post algorithm counters/rates. |
+| Posts | `POST /posts/:postId/link-click` | Optional JSON `url`. | Link click signal recorded. |
+| Feed | `GET /feed/home` | Bearer token, optional `page`, `limit`, `useCache`. | Following feed in `data.items`, `data.feed`, and `data.posts`. |
+| Feed | `POST /feed/home/refresh` | Bearer token. | Feed cache invalidated success. |
+| Feed | `GET /feed/sphere` | Bearer token, optional `page`, `limit`, `mode`, `useCache`, `variant`. | Official Sphere/For You feed in `data.items`, plus `algorithm` and `pagination`. |
+| Feed | `GET /feed/sphere/category/:category` | Category path param, optional query. | Category discovery feed. |
+| Feed/Admin | `GET /feed/analytics?days=7` | Admin/mod token. | Algorithm analytics by action/source/variant/topic. |
+| Feed | `GET /feed/ranking/:postId` | Post id, optional `variant`. | Debug score breakdown for one post. |
+| Social | `POST /social/follow/:userId` | User id path param. | Follow status `ACCEPTED` or `PENDING`, follow id. |
+| Social | `DELETE /social/follow/:userId` | User id path param. | Unfollow success. |
+| Social | `GET /social/follow/status/:userId` | User id path param. | Follow status and `isFollowing`. |
+| Social | `GET /social/relationship/:userId` | User id path param. | `following`, `followedBy`, `pending`, `muted`, `blocked`, `blockedBy`. |
+| Social | `GET /social/followers/:userId` | User id, optional pagination. | Paginated followers. |
+| Social | `GET /social/following/:userId` | User id, optional pagination. | Paginated following list. |
+| Social | `GET /social/follow-requests` | Optional pagination. | Pending follow requests. |
+| Social | `POST /social/follow-requests/:requestId/accept` | Request id. | Request accepted success. |
+| Social | `POST /social/follow-requests/:requestId/reject` | Request id. | Request rejected success. |
+| Social | `GET /social/mutual/:userId` | User id. | Mutual followers. |
+| Social | `GET /social/suggestions` | Optional `limit`. | Follow suggestions. |
+| Social | `POST /social/block/:userId` | User id. | Block success. |
+| Social | `DELETE /social/block/:userId` | User id. | Unblock success. |
+| Social | `GET /social/blocked` | Optional pagination. | Blocked users list. |
+| Social | `POST /social/mute/:userId` | User id. | Mute success. |
+| Social | `DELETE /social/mute/:userId` | User id. | Unmute success. |
+| Social | `GET /social/muted` | Optional pagination. | Muted users list. |
+| Messages | `GET /messages/dm/conversations` | Bearer token. | DM conversation list. |
+| Messages | `GET /messages/dm/conversations/search?q=` | Query `q`, optional pagination. | Search results by participant/message text. |
+| Messages | `POST /messages/dm/conversations/:userId` | User id. | Existing or created DM conversation. |
+| Messages | `GET /messages/dm/conversations/:conversationId/messages` | Conversation id, optional pagination. | Paginated DM messages. |
+| Messages | `POST /messages/dm/conversations/:conversationId/messages` | JSON `bodyText`. | Created DM message. |
+| Messages | `GET /messages/channels/:circleId/:channelId` | Circle/channel ids, optional pagination. | Channel messages. |
+| Messages | `POST /messages/channels/:circleId/:channelId` | JSON `bodyText`, optional `replyToMessageId`. | Created channel message. |
+| Messages | `GET /messages/reads` | Bearer token. | Read states. |
+| Messages | `POST /messages/reads` | JSON `scopeType`, `scopeId`, optional `lastReadMessageId`. | Updated read state. |
+| Notifications | `GET /notifications` | Optional pagination. | Notifications list and unread count. |
+| Notifications | `GET /notifications/unread-count` | Bearer token. | Unread count. |
+| Notifications | `PATCH /notifications/read-all` | Bearer token. | All notifications marked read. |
+| Notifications | `PATCH /notifications/:notificationId/read` | Notification id. | One notification marked read. |
+| Notification Preferences | `GET /notifications/preferences` | Bearer token. | Full notification preference matrix. |
+| Notification Preferences | `PUT /notifications/preferences` | JSON nested preference booleans. | Updated preferences. |
+| Notification Preferences | `GET /notifications/preferences/defaults` | Bearer token. | Default preference matrix. |
+| Notification Preferences | `POST /notifications/preferences/reset` | Bearer token. | Preferences reset to defaults. |
+| Notification Preferences | `POST /notifications/preferences/enable-all` | Bearer token. | All preferences enabled. |
+| Notification Preferences | `POST /notifications/preferences/disable-all` | Bearer token. | All preferences disabled. |
+| Notification Preferences | `GET /notifications/preferences/summary` | Bearer token. | Compact enabled/disabled summary. |
+| Notification Preferences | `POST /notifications/preferences/test` | Optional query `type`. | Test notification result. |
+| Search | `GET /search?q=` | Query `q`, optional `type`, `limit`. | Grouped search results for users/posts/circles/categories. |
+| Trending | `GET /trending/hashtags` | Optional filters. | Trending hashtags. |
+| Trending | `GET /trending/topics` | Optional filters. | Trending topics. |
+| Trending | `GET /trending/categories` | No auth. | Trend categories. |
+| Trending | `GET /trending/stats` | No auth. | Trend counters/stats. |
+| Trending | `GET /trending/category/:category` | Category path param. | Category trends. |
+| Trending | `GET /trending/hashtag/:tag` | Hashtag path param. | Hashtag detail. |
+| Trending | `GET /trending/topic/:topic/:type?` | Topic path param. | Topic detail. |
+| Trending | `GET /trending/region/:region` | Region path param. | Regional trends. |
+| Trending | `GET /trending/search?q=` | Query `q`. | Trend search results. |
+| Media | `POST /media/signature` | JSON `usage`, `resourceType`. | Cloudinary signed upload payload. |
+| Media | `POST /media/assets` | Media registration JSON or text asset JSON. | Stored media/text asset record. |
+| Media | `POST /media/register` | Same as `/media/assets`. | Stored media/text asset record. |
+| Media | `GET /media/assets` | Optional `usage`, `status`, pagination. | User-owned assets. |
+| Media | `PATCH /media/assets/:publicId` | Public id and update JSON. | Updated asset. |
+| Media | `DELETE /media/:publicId` | Public id. | Asset deleted/marked deleted. |
+| Payments | `POST /payments/initialize` | JSON `amount`, optional plan/metadata. | Paystack initialization/authorization data. |
+| Payments | `GET /payments/verify/:reference` | Payment reference. | Verified transaction state. |
+| Payments | `GET /payments/history` | Bearer token. | Payment history. |
+| Payments | `POST /payments/webhook` | Paystack only, signed raw payload. | Fast `200` after verified event is stored/queued. |
+| Moderation | `GET /moderation/report-reasons` | No auth. | Report reason list. |
+| Moderation | `POST /moderation/reports` | JSON `targetType`, `targetId`, `reasonCode`, optional details. | Created report. |
+| Moderation | `GET /moderation/reports` | Admin/mod token and filters. | Moderation report queue. |
+| Moderation | `POST /moderation/reports/:reportId/actions` | Report id and action JSON. | Applied moderation action. |
+| Moderation | `GET /moderation/audit-logs` | Admin/mod filters. | Audit log timeline. |
+| Mobile | `GET /mobile/update-check` | No auth. | Latest mobile release/update metadata. |
+| Mobile | `GET /mobile/update-download/:assetId` | Asset id. | Proxied update file stream. |
+
+### Sphere Page Contract
+
+Use this endpoint for the main Sphere page:
+
+```http
+GET /api/feed/sphere?page=1&limit=20&mode=top
+Authorization: Bearer <accessToken>
+```
+
+The backend sends posts in three equivalent arrays for frontend convenience:
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [],
+    "feed": [],
+    "posts": [],
+    "algorithm": {
+      "version": "wemsty-v2",
+      "variant": "balanced"
+    },
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 2,
+      "pages": 1,
+      "hasMore": false
+    }
+  }
+}
+```
+
+Each array item is a ranked feed item:
+
+```json
+{
+  "post": {
+    "id": "post_id",
+    "author": {
+      "_id": "author_id",
+      "username": "cyril_kennedy",
+      "profile": {
+        "displayName": "Cyril Kennedy",
+        "avatar": "https://..."
+      }
+    },
+    "content": {
+      "text": "Post text",
+      "media": [],
+      "hashtags": []
+    },
+    "postType": "original",
+    "visibility": "public",
+    "engagement": {
+      "likes": 0,
+      "comments": 0,
+      "reposts": 0,
+      "views": 0
+    },
+    "likesCount": 0,
+    "commentsCount": 0,
+    "repostsCount": 0,
+    "createdAt": "2026-05-19T00:00:00.000Z"
+  },
+  "viewerState": {
+    "liked": false,
+    "reposted": false,
+    "bookmarked": false
+  },
+  "rank": {
+    "score": 0.5,
+    "reason": "recommended",
+    "source": "small_creator"
+  },
+  "socialProof": null
+}
+```
+
+Frontend should read:
+
+```js
+const feedItems = response.data.data.items;
+const firstPost = feedItems[0].post;
+const viewerFlags = feedItems[0].viewerState;
+```
+
+For algorithm quality, frontend should send these events:
+
+```http
+POST /api/posts/:postId/engagement
+Authorization: Bearer <accessToken>
+Content-Type: application/json
+```
+
+```json
+{ "action": "impression" }
+```
+
+```json
+{ "action": "dwell", "dwellSeconds": 8 }
+```
+
+```json
+{ "action": "hide" }
+```
+
+```json
+{ "action": "not_interested" }
+```
+
 ### Health Contract
 
 | Endpoint | Frontend must send | Frontend must do after response |
@@ -1853,6 +2104,7 @@ This section is the strict frontend contract for every mounted API route.
 | `POST /posts/:postId/link-click` | Bearer token + optional JSON `url`. | Send before opening external links so link-click interest can be learned. |
 
 `GET /feed/sphere` uses the Phase 1 Wemsty For You pipeline:
+- viewer's own eligible public original/quote posts
 - followed-author candidates
 - topic-interest candidates
 - trending/velocity candidates

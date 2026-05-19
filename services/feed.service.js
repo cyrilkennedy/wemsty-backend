@@ -536,6 +536,7 @@ class FeedService {
       smallCreator: Math.max(1, Math.round(limit * quotas.smallCreator)),
       exploration: Math.max(1, Math.round(limit * quotas.exploration)),
       socialProof: Math.max(3, Math.round(limit * 0.12)),
+      self: Math.max(3, Math.round(limit * 0.05)),
       vector: Math.max(0, Math.round(limit * 0.06))
     };
   }
@@ -558,16 +559,18 @@ class FeedService {
     const mutedTopics = new Set((viewer?.algorithm?.mutedTopics || []).map((topic) => String(topic).toLowerCase()));
 
     if (await this.isNewUserForFeed(userId, viewer)) {
+      const own = await this.getViewerOwnCandidates(userId, blockedUsers, sourceLimits.self);
       const onboarding = await this.getOnboardingCandidates(viewer, blockedUsers, sourceLimits.interest + sourceLimits.exploration);
       const trending = await this.getTrendingCandidates(blockedUsers, sourceLimits.trending);
       const smallCreators = await this.getSmallCreatorCandidates(blockedUsers, sourceLimits.smallCreator);
       return this.filterMutedTopicCandidates(
-        this.mergeCandidates(onboarding, trending, smallCreators),
+        this.mergeCandidates(own, onboarding, trending, smallCreators),
         mutedTopics
       ).slice(0, safeLimit);
     }
 
     const [
+      own,
       followed,
       interest,
       collaborative,
@@ -577,6 +580,7 @@ class FeedService {
       exploration,
       socialProof
     ] = await Promise.all([
+      this.getViewerOwnCandidates(userId, blockedUsers, sourceLimits.self),
       this.getCandidatesFromFollowed(userId, followedIds, blockedUsers, sourceLimits.followed),
       this.getCandidatesByUserInterests(userId, blockedUsers, sourceLimits.interest),
       this.getCollaborativeCandidates(userId, blockedUsers, Math.max(5, Math.round(safeLimit * this.COLLABORATIVE_QUOTA))),
@@ -588,9 +592,26 @@ class FeedService {
     ]);
 
     return this.filterMutedTopicCandidates(
-      this.mergeCandidates(socialProof, interest, collaborative, vector, followed, trending, smallCreators, exploration),
+      this.mergeCandidates(own, socialProof, interest, collaborative, vector, followed, trending, smallCreators, exploration),
       mutedTopics
     ).slice(0, safeLimit);
+  }
+
+  async getViewerOwnCandidates(userId, blockedUsers, limit = 5) {
+    if (!userId || limit <= 0) return [];
+    if (blockedUsers.map((id) => id.toString()).includes(userId.toString())) return [];
+
+    return Post.find({
+      author: userId,
+      status: 'active',
+      visibility: 'public',
+      sphereEligible: true,
+      postType: { $in: ['original', 'quote'] }
+    })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean()
+      .then((posts) => posts.map((post) => ({ ...post, _candidateSource: 'self' })));
   }
 
   async getVectorCandidates(userId, blockedUsers, limit = 12) {
